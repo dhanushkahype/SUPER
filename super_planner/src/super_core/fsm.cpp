@@ -1,3 +1,5 @@
+#include <cmath>
+using std::isnan;
 /**
 * This file is part of SUPER
 *

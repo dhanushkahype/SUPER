@@ -112,7 +112,7 @@ rog_map:
   inflation_step: 2
   unk_inflation_en: false
   unk_inflation_step: 1
-  map_size: [50, 50, 5]
+  map_size: [20, 20, 4]
   fix_map_origin: [0, 0, 0]
   frontier_extraction_en: true
 
@@ -123,7 +123,7 @@ rog_map:
 
   map_sliding:
     enable: true
-    threshold: 5.0
+    threshold: 3.0
 
   esdf:
     enable: false
@@ -141,7 +141,7 @@ rog_map:
     use_dynamic_reconfigure: false
     time_rate: 2
     frame_rate: 0
-    range: [50, 50, 5]
+    range: [20, 20, 5]
     frame_id: "world"
     pub_unknown_map_en: true
 
@@ -149,14 +149,14 @@ rog_map:
   point_filt_num: 3
 
   raycasting:
-    enable: false
-    batch_update_size: 1
-    local_update_box: [100, 100, 5]
-    ray_range: [0.5, 100]
+    enable: true                  # was false - needed to clear thickened walls
+    batch_update_size: 2          # was 1
+    local_update_box: [20, 20, 4] # was [100, 100, 5] - match map size
+    ray_range: [0.5, 15]          # was [0.5, 100] - no need to raycast beyond sensor range
     p_min: 0.12
-    p_miss: 0.49
-    p_free: 0.499
+    p_miss: 0.45                  # was 0.49 (no-op) - now actually clears free space
+    p_free: 0.30                  # was 0.499 (unreachable) - voxels can now become free
     p_occ: 0.85
-    p_hit: 0.9
+    p_hit: 0.90                   # unchanged - real walls accumulate fast
     p_max: 0.98
     unk_thresh: 1.0

@@ -23,6 +23,8 @@ Panels:
         - /Pose1
         - /MarkerArray2
         - /MarkerArray2/Topic1
+        - /GoalPreview1
+        - /GoalPreview1/Topic1
       Splitter Ratio: 0.5
     Tree Height: 1147
   - Class: rviz_common/Selection
@@ -237,6 +239,18 @@ Visualization Manager:
         Reliability Policy: Best Effort
         Value: /mission/mkr
       Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: GoalPreview
+      Namespaces:
+        goal_3d_selector: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /goal_preview
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 255; 255; 255
@@ -252,7 +266,7 @@ Visualization Manager:
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /goal_pose
+        Value: /goal_xy
   Transformation:
     Current:
       Class: rviz_default_plugins/TF

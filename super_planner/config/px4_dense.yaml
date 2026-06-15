@@ -2,15 +2,15 @@
 # Based on static_dense.yaml, tuned for PX4 SITL + OMMPC integration testing.
 # Key changes from stock:
 #   - Conservative velocity/acceleration limits for first integration test
-#   - click_height = 0.8 to match OMMPC takeoff_height
-#   - Smaller map size (cylinders are near origin)
+#   - click_height disabled so global 3D goal Z passes through unchanged
+#   - Vertical map volume expanded for two-storey stairwell navigation
 #   - ROG-Map visualization enabled for debugging
 #   - raycasting disabled (using ground-truth sim pointcloud)
 
 fsm:
   click_goal_en: true
   click_goal_topic: "/planning/click_goal"
-  click_height: 1.5
+  click_height: -6.0          # disabled (any value <= -5 passes goal Z through unchanged)
   click_yaw_en: true
   replan_rate: 15.0
   cmd_topic: "/planning/pos_cmd"
@@ -24,7 +24,7 @@ super_planner:
   use_fov_cut: false
   print_log: true
   visual_process: false
-  frontend_in_known_free: false
+  frontend_in_known_free: true
   goal_yaw_en: false
   goal_vel_en: false
   corridor_bound_dis: 0.8
@@ -36,7 +36,7 @@ super_planner:
   planning_horizon: 7.0
   sensing_horizon: -1
   receding_dis: 1.0
-  robot_r: 0.3
+  robot_r: 0.35
   yaw_dot_max: 3.0
   yaw_mode: 1
   mpc_horizon: 15
@@ -63,14 +63,14 @@ traj_opt:
     scale_factor: 1.0
     integral_reso: 15
     smooth_eps: 0.01
-    penna_t: 1.0e+7
-    penna_pos: 5.0e+9
-    penna_vel: 5.0e+8
-    penna_acc: 5.0e+8
-    penna_jerk: -5.0e+8
-    penna_attract: 5.0e+8
-    penna_omg: -1
-    penna_thr: -1
+    penna_t: 12000.0
+    penna_pos: 5.0e+6
+    penna_vel: 5.0e+5
+    penna_acc: 5.0e+5
+    penna_jerk: -5.0e+5
+    penna_attract: 1.0e+3
+    penna_omg:  5.0e+5
+    penna_thr: 1.0e+5
 
   backup_traj:
     uniform_time_en: true
@@ -82,14 +82,15 @@ traj_opt:
     scale_factor: 1.0
     integral_reso: 12
     smooth_eps: 0.01
-    penna_t: 100.0
-    penna_ts: 1.0e+7
-    penna_pos: 1.0e+10
-    penna_vel: 1.0e+8
-    penna_acc: 1.0e+8
-    penna_jerk: -1.0e+6
-    penna_omg: -1
-    penna_thr: -1
+    penna_t: 1200.0
+    penna_ts: 1.0e+5
+    penna_pos: 1.0e+6
+    penna_vel: 1.0e+5
+    penna_acc: 1.0e+5
+    penna_jerk: -1.0e+5
+    penna_omg: 1.0e+5
+    penna_max_acc_thr: 1.0e+5
+    penna_min_acc_thr: 1.0e+5
 
   flatness:
     mass: 2.33
@@ -100,7 +101,7 @@ traj_opt:
     grav: 9.81
 
 astar:
-  map_voxel_num: [200, 200, 60]
+  map_voxel_num: [200, 200, 100]
   visual_process: false
   allow_diag: true
   heu_type: 2
@@ -112,11 +113,13 @@ rog_map:
   inflation_step: 2
   unk_inflation_en: false
   unk_inflation_step: 1
-  map_size: [20, 20, 4]
+  map_size: [20, 20, 10]
   fix_map_origin: [0, 0, 0]
-  frontier_extraction_en: true
+  frontier_extraction_en: false
 
-  virtual_ceil_height: 3.5
+  # Absolute safety cap below the staircase_test roof underside at Z=11.5m.
+  # The local map remains sliding; only this hard world-frame ceiling must move.
+  virtual_ceil_height: 11.4
   virtual_ground_height: 0.15
 
   load_pcd_en: false
@@ -141,7 +144,7 @@ rog_map:
     use_dynamic_reconfigure: false
     time_rate: 2
     frame_rate: 0
-    range: [20, 20, 5]
+    range: [20, 20, 10]
     frame_id: "world"
     pub_unknown_map_en: true
 

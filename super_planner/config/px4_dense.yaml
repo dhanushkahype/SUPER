@@ -37,7 +37,7 @@ super_planner:
   sensing_horizon: -1
   receding_dis: 1.0
   robot_r: 0.35
-  yaw_dot_max: 3.0
+  yaw_dot_max: 1.5
   yaw_mode: 1
   mpc_horizon: 15
 

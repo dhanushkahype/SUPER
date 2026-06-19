@@ -20,7 +20,7 @@ fsm:
 super_planner:
   backup_traj_en: true
   detailed_log_en: false
-  visualization_en: false
+  visualization_en: true
   use_fov_cut: false
   print_log: false
   visual_process: false

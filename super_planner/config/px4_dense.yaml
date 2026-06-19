@@ -12,7 +12,7 @@ fsm:
   click_goal_topic: "/planning/click_goal"
   click_height: -6.0          # disabled (any value <= -5 passes goal Z through unchanged)
   click_yaw_en: true
-  replan_rate: 15.0
+  replan_rate: 10.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -20,9 +20,9 @@ fsm:
 super_planner:
   backup_traj_en: true
   detailed_log_en: false
-  visualization_en: true
+  visualization_en: false
   use_fov_cut: false
-  print_log: true
+  print_log: false
   visual_process: false
   frontend_in_known_free: true
   goal_yaw_en: false
@@ -105,7 +105,7 @@ astar:
   visual_process: false
   allow_diag: true
   heu_type: 2
-  debug_visualization_en: true
+  debug_visualization_en: false
 
 rog_map:
   resolution: 0.1
@@ -146,7 +146,7 @@ rog_map:
     frame_rate: 0
     range: [20, 20, 10]
     frame_id: "world"
-    pub_unknown_map_en: true
+    pub_unknown_map_en: false
 
   intensity_thresh: -10
   point_filt_num: 3

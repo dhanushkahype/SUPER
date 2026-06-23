@@ -12,7 +12,7 @@ fsm:
   click_goal_topic: "/planning/click_goal"
   click_height: -6.0          # disabled (any value <= -5 passes goal Z through unchanged)
   click_yaw_en: true
-  replan_rate: 10.0
+  replan_rate: 15.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true
@@ -33,7 +33,7 @@ super_planner:
   iris_iter_num: 2
   obs_skip_num: 2
   replan_forward_dt: 0.1
-  planning_horizon: 7.0
+  planning_horizon: 15.0
   sensing_horizon: -1
   receding_dis: 1.0
   robot_r: 0.35
@@ -47,11 +47,11 @@ traj_opt:
     print_optimizer_log: false
 
   boundary:
-    max_vel: 3.0
-    max_acc: 3.5
-    max_jerk: 15.0
-    max_omg: 1.0
-    max_acc_thr: 12.0
+    max_vel: 10.0
+    max_acc: 8.0
+    max_jerk: 20.0
+    max_omg: 2.0
+    max_acc_thr: 25.0
     min_acc_thr: 5.0
     penna_margin: 0.05
 

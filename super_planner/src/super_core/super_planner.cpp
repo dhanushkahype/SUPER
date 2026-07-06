@@ -460,6 +460,11 @@ namespace super_planner {
                 }
 
                 /// 1) Check a series of early termination conditions.
+                // In continuous_following mode these checks are skipped: the goal
+                // keeps moving (orbit carrot) so we must replan every cycle to
+                // avoid NO_NEED / FAILED paths that eventually expire the backup
+                // trajectory and lock finish_plan=true.
+                if (!cfg_.continuous_following) {
                 if (!gi_.new_goal && last_exp_traj_info.getSFCSize() == 1 && last_exp_traj_info.connectedToGoal()) {
                     if (cfg_.print_log) {
                         ros_ptr_->warn(
@@ -492,6 +497,7 @@ namespace super_planner {
                         return NO_NEED;
                     }
                 }
+                } // end !continuous_following
             }
             /// Ready for replan.
             out_exp_traj_info.setGoalConnectedFlag(false);
@@ -726,12 +732,20 @@ namespace super_planner {
 
         pos_fina_state.setZero();
         pos_fina_state.col(0) = guide_path.back();
-        if (cfg_.goal_vel_en && (gi_.goal_p - robot_state_.p).norm() > cfg_.planning_horizon / 2) {
+        if (cfg_.continuous_following) {
+            // Orbit/following mode: always keep non-zero terminal velocity so the
+            // drone doesn't decelerate to a stop at the carrot.  The carrot keeps
+            // moving at 25 Hz; SUPER replans continuously and the drone tracks the
+            // arc without the zero-velocity terminal condition firing.
             pos_fina_state.col(1) = (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
-        }
-        if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
-            pos_fina_state.col(1).setZero();
-            pos_fina_state.col(0) = gi_.goal_p;
+        } else {
+            if (cfg_.goal_vel_en && (gi_.goal_p - robot_state_.p).norm() > cfg_.planning_horizon / 2) {
+                pos_fina_state.col(1) = (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
+            }
+            if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
+                pos_fina_state.col(1).setZero();
+                pos_fina_state.col(0) = gi_.goal_p;
+            }
         }
 
         // optimize and update exp traj

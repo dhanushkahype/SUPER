@@ -132,7 +132,7 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
-                if (closeToGoal(0.1)) {
+                if (!cfg_.continuous_following && closeToGoal(0.1)) {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     gi_.new_goal = false;
                     finish_plan = true;

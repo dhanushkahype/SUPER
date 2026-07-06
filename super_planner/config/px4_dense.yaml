@@ -25,6 +25,7 @@ super_planner:
   print_log: false
   visual_process: false
   frontend_in_known_free: true
+  continuous_following: true
   goal_yaw_en: true
   goal_vel_en: false
   corridor_bound_dis: 0.8
@@ -157,9 +158,9 @@ rog_map:
     local_update_box: [20, 20, 4] # was [100, 100, 5] - match map size
     ray_range: [0.5, 15]          # was [0.5, 100] - no need to raycast beyond sensor range
     p_min: 0.12
-    p_miss: 0.45                  # was 0.49 (no-op) - now actually clears free space
+    p_miss: 0.40                  # was 0.45 - lowered for ~2x faster clearing of dynamic-obstacle trails
     p_free: 0.30                  # was 0.499 (unreachable) - voxels can now become free
     p_occ: 0.85
     p_hit: 0.90                   # unchanged - real walls accumulate fast
-    p_max: 0.98
+    p_max: 0.92                  # was 0.98 - vacated dynamic cells clear ~3x faster; walls still saturate >p_occ
     unk_thresh: 1.0

@@ -136,7 +136,11 @@ rog_map:
 
   ros_callback:
     enable: true
-    cloud_topic: "/cloud_registered_world"
+    # FreeDOM static-filtered world cloud (dynamic movers removed) so SUPER's local
+    # map stays free of obstacle trails. Dynamic avoidance is handled reactively by
+    # the OMMPC setpoint-CBF governor (cbf_sp). Revert to "/cloud_registered_world"
+    # to restore raw stop-and-yield behaviour (movers visible to ROG-Map).
+    cloud_topic: "/freedom/static_scan_world"
     odom_topic: "/lidar_slam/odom"
     odom_timeout: 2.0
 

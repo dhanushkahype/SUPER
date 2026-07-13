@@ -37,6 +37,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "mars_quadrotor_msgs/msg/position_command.hpp"
 #include "mars_quadrotor_msgs/msg/polynomial_trajectory.hpp"
+#include "std_srvs/srv/set_bool.hpp"
 
 
 namespace fsm {
@@ -47,6 +48,7 @@ namespace fsm {
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>::SharedPtr mpc_cmd_pub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+        rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr pause_srv_;
 
         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
         rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_;
@@ -281,6 +283,19 @@ namespace fsm {
             setGoalPosiAndYaw(goal_p, goal_q);
         }
 
+        // Wires the (previously dormant) Fsm::stop gate — checked in
+        // callReplanOnce()/callMainFsmOnce() — to an external caller. Used by
+        // OMMPC's stop-instead-of-dodge governor: while paused, SUPER neither
+        // replans nor publishes a new poly_traj, so it can't clobber an OMMPC-
+        // side HOVER fallback with a fresh trajectory the instant it's set.
+        void superPauseCallback(const std::shared_ptr<std_srvs::srv::SetBool::Request> req,
+                                 std::shared_ptr<std_srvs::srv::SetBool::Response> res) {
+            stop = req->data;
+            cout << YELLOW << " -- [Fsm] " << (stop ? "Paused" : "Resumed")
+                 << " by /planning/super_pause." << RESET << endl;
+            res->success = true;
+        }
+
         void init(const rclcpp::Node::SharedPtr nh, const std::string &cfg_path) {
             // TODO: The current implementation uses a lenient QoS configuration for message transmission.
             const rclcpp::QoS qos(rclcpp::QoS(1)
@@ -299,6 +314,10 @@ namespace fsm {
             mpc_cmd_pub_ = nh_->create_publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>(cfg_.mpc_cmd_topic,
                                                                                                  qos);
             path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("fsm/path", qos);
+            pause_srv_ = nh_->create_service<std_srvs::srv::SetBool>(
+                "/planning/super_pause",
+                std::bind(&FsmRos2::superPauseCallback, this,
+                          std::placeholders::_1, std::placeholders::_2));
 
             int cmd_cnt = 0;
 

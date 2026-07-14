@@ -732,19 +732,31 @@ namespace super_planner {
 
         pos_fina_state.setZero();
         pos_fina_state.col(0) = guide_path.back();
-        if (cfg_.continuous_following) {
-            // Orbit/following mode: always keep non-zero terminal velocity so the
-            // drone doesn't decelerate to a stop at the carrot.  The carrot keeps
-            // moving at 25 Hz; SUPER replans continuously and the drone tracks the
-            // arc without the zero-velocity terminal condition firing.
-            pos_fina_state.col(1) = (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
-        } else {
-            if (cfg_.goal_vel_en && (gi_.goal_p - robot_state_.p).norm() > cfg_.planning_horizon / 2) {
-                pos_fina_state.col(1) = (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
-            }
-            if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
+        {
+            const double dist_to_goal = (gi_.goal_p - robot_state_.p).norm();
+            if (cfg_.continuous_following && dist_to_goal > cfg_.goal_stop_dis) {
+                // Orbit / moving-carrot: keep non-zero terminal velocity so the
+                // drone doesn't decelerate at every intermediate carrot.
+                const Vec3f dir = gi_.goal_p - robot_state_.p;
+                if (dir.norm() > 1e-3) {
+                    pos_fina_state.col(1) = dir.normalized() * cfg_.exp_traj_cfg.max_vel / 2;
+                }
+            } else if (!cfg_.continuous_following) {
+                if (cfg_.goal_vel_en && dist_to_goal > cfg_.planning_horizon / 2) {
+                    pos_fina_state.col(1) =
+                        (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
+                }
+                if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
+                    pos_fina_state.col(1).setZero();
+                    pos_fina_state.col(0) = gi_.goal_p;
+                }
+            } else {
+                // continuous_following but near a static endpoint: brake to zero
+                // terminal velocity so OMMPC can settle instead of oscillating.
                 pos_fina_state.col(1).setZero();
-                pos_fina_state.col(0) = gi_.goal_p;
+                if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
+                    pos_fina_state.col(0) = gi_.goal_p;
+                }
             }
         }
 

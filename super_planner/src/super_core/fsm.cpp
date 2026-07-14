@@ -57,6 +57,18 @@ namespace fsm {
             return;
         }
 
+        // Static-goal settle (works with continuous_following too). Orbit
+        // carrots stay ~lookahead away so this only fires at a real endpoint.
+        if (arrivedAtGoal()) {
+            finish_plan = true;
+            gi_.new_goal = false;
+            ChangeState("ReplanTimerCallback", WAIT_GOAL);
+            cout << GREEN
+                 << " -- [Fsm] Arrived at goal (settle) — stop continuous replan."
+                 << RESET << endl;
+            return;
+        }
+
         if (plan_from_rest_) {
             plan_from_rest_ = false;
             return;
@@ -68,8 +80,11 @@ namespace fsm {
 
         RET_CODE ret_code = planner_ptr_->ReplanOnce(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
         if (ret_code == FAILED) {
-//            cout << YELLOW << " -- [Fsm] ReplanOnce failed." << RESET << endl;
-        } else { cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl; }
+            onPlanFailure("ReplanOnce");
+        } else if (ret_code == SUCCESS || ret_code == FINISH) {
+            onPlanSuccess();
+            cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl;
+        }
 
         if (ret_code == EMER) {
             ChangeState("ReplanTimerCallback", EMER_STOP);
@@ -77,7 +92,13 @@ namespace fsm {
             ChangeState("ReplanTimerCallback", GENERATE_TRAJ);
         } else if (ret_code == SUCCESS || ret_code == FINISH) {
             gi_.new_goal = false;
-            publishPolyTraj();
+            // FINISH near a static goal: don't keep feeding OMMPC tiny loops.
+            if (ret_code == FINISH && arrivedAtGoal()) {
+                finish_plan = true;
+                ChangeState("ReplanTimerCallback", WAIT_GOAL);
+            } else {
+                publishPolyTraj();
+            }
         }
 
         planner_ptr_->getModuleTimeConsuming(log_module_time);
@@ -132,10 +153,16 @@ namespace fsm {
                 break;
             }
             case GENERATE_TRAJ: {
-                if (!cfg_.continuous_following && closeToGoal(0.1)) {
+                // Settle on arrival even when continuous_following is on
+                // (otherwise PlanFromRest keeps minting short non-zero-terminal
+                // trajectories and the drone oscillates at the goal).
+                if (arrivedAtGoal() || (!cfg_.continuous_following && closeToGoal(0.1))) {
                     ChangeState("MainFsmCallback", WAIT_GOAL);
                     gi_.new_goal = false;
                     finish_plan = true;
+                    cout << GREEN
+                         << " -- [Fsm] GENERATE_TRAJ: already at goal, not planning."
+                         << RESET << endl;
                     return;
                 }
                 int retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
@@ -145,6 +172,7 @@ namespace fsm {
                     return;
                 }
                 if (retcode == SUCCESS || retcode == FINISH) {
+                    onPlanSuccess();
                     gi_.new_goal = false;
                     plan_from_rest_ = true;
                     finish_plan = false;
@@ -157,7 +185,7 @@ namespace fsm {
                     ChangeState("MainFsmCallback", FOLLOW_TRAJ);
                 } else {
                     cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
-                    // ros::Duration(0.1).sleep();
+                    onPlanFailure("PlanFromRest");
                 }
                 replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
                 break;
@@ -181,6 +209,103 @@ namespace fsm {
         /// The intermedia points should be in free space.
         double dis = (robot_state_.p - gi_.goal_p).norm();
         return dis < thresh_dis;
+    }
+
+    bool Fsm::arrivedAtGoal() {
+        // Distance + speed: need both so a fast fly-through of a moving carrot
+        // (orbit) does not falsely "arrive", while a static endpoint settles.
+        const double dis = (robot_state_.p - gi_.goal_p).norm();
+        const double speed = robot_state_.v.norm();
+        return dis < cfg_.goal_arrive_dis && speed < cfg_.goal_arrive_vel;
+    }
+
+    void Fsm::onPlanSuccess() {
+        plan_fail_streak_ = 0;
+        if (frontend_relaxed_) {
+            planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
+            frontend_relaxed_ = false;
+            cout << GREEN
+                 << " -- [Fsm] Plan ok — restored frontend_in_known_free="
+                 << (frontend_known_free_default_ ? "true" : "false")
+                 << RESET << endl;
+        }
+    }
+
+    void Fsm::onPlanFailure(const std::string & context) {
+        plan_fail_streak_++;
+        cout << YELLOW << " -- [Fsm] " << context << " fail streak="
+             << plan_fail_streak_ << RESET << endl;
+
+        // Level 1: re-snap goal into free space with a larger search radius
+        // (phantom occupancy / mover trails often sit on the requested goal).
+        if (plan_fail_streak_ == cfg_.stuck_fail_count) {
+            Vec3f snapped = gi_.goal_p;
+            if (planner_ptr_->getMap()->getNearestInfCellNot(
+                    GridType::OCCUPIED, gi_.goal_p, snapped, 5.0)) {
+                gi_.goal_p = snapped;
+                gi_.new_goal = true;
+                cout << YELLOW
+                     << " -- [Fsm] Stuck recovery L1: re-snapped goal to free "
+                     << gi_.goal_p.transpose() << RESET << endl;
+            }
+        }
+
+        // Level 2: temporarily allow A* through unknown (ghost trails that
+        // still read occupied/unknown while FreeDOM has already cleared them
+        // from OctoMap). Restored on next successful plan.
+        if (plan_fail_streak_ == cfg_.stuck_relax_count) {
+            if (!frontend_relaxed_) {
+                frontend_known_free_default_ = planner_ptr_->frontendInKnownFree();
+                planner_ptr_->setFrontendInKnownFree(false);
+                frontend_relaxed_ = true;
+                gi_.new_goal = true;
+                cout << YELLOW
+                     << " -- [Fsm] Stuck recovery L2: frontend_in_known_free=false "
+                        "(unknown traversable until plan succeeds)"
+                     << RESET << endl;
+            }
+        }
+
+        // Level 2.5: hard-reset the in-process ROG local map (phantom dynamics /
+        // stale inflation). ROG is not a separate server — it lives in fsm_node;
+        // clearing + recentering is the equivalent of a "rog map restart".
+        if (plan_fail_streak_ == cfg_.stuck_reset_map_count) {
+            const double now_s = ros_ptr_->getSimTime();
+            const bool cooled = (last_rog_reset_wall_s_ < 0.0) ||
+                ((now_s - last_rog_reset_wall_s_) >= cfg_.stuck_reset_map_cooldown);
+            if (cooled) {
+                planner_ptr_->getRobotState(robot_state_);
+                planner_ptr_->getMap()->hardResetLocalMap(robot_state_.p);
+                last_rog_reset_wall_s_ = now_s;
+                gi_.new_goal = true;
+                cout << YELLOW
+                     << " -- [Fsm] Stuck recovery L2.5: ROG local map HARD RESET "
+                        "at robot — waiting for LiDAR to refill free space"
+                     << RESET << endl;
+            } else {
+                cout << YELLOW
+                     << " -- [Fsm] Stuck recovery L2.5: ROG reset skipped "
+                        "(cooldown " << cfg_.stuck_reset_map_cooldown << "s)"
+                     << RESET << endl;
+            }
+        }
+
+        // Level 3: give up this goal so global_planner / exploration can
+        // pick a new one (or the user can re-click). Stay ready for a new goal.
+        if (plan_fail_streak_ >= cfg_.stuck_give_up_count) {
+            finish_plan = true;
+            gi_.new_goal = false;
+            plan_fail_streak_ = 0;
+            if (frontend_relaxed_) {
+                planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
+                frontend_relaxed_ = false;
+            }
+            ChangeState(context, WAIT_GOAL);
+            cout << YELLOW
+                 << " -- [Fsm] Stuck recovery L3: giving up goal, WAIT_GOAL "
+                    "(replan/global path needed)"
+                 << RESET << endl;
+        }
     }
 
     void Fsm::setGoalPosiAndYaw(const Vec3f &p, const Quatf &q) {
@@ -222,6 +347,14 @@ namespace fsm {
 
         started_ = true;
         gi_.new_goal = true;
+        // A fresh goal must re-enable continuous replan (finish_plan may still
+        // be set from the previous arrival settle).
+        finish_plan = false;
+        plan_fail_streak_ = 0;
+        if (frontend_relaxed_) {
+            planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
+            frontend_relaxed_ = false;
+        }
     }
 
     void Fsm::ChangeState(const string &call_func, const MACHINE_STATE &new_state) {

@@ -119,6 +119,16 @@ namespace super_planner {
             return gi_.goal_valid;
         }
 
+        /// Temporary override for stuck recovery (phantom occupancy). Caller
+        /// should restore the YAML default after a successful plan.
+        void setFrontendInKnownFree(bool enable) {
+            cfg_.frontend_in_known_free = enable;
+        }
+
+        bool frontendInKnownFree() const {
+            return cfg_.frontend_in_known_free;
+        }
+
         typedef std::shared_ptr<SuperPlanner> Ptr;
 
         void getOneHeartbeatTime(double &start_WT_pos, bool &traj_finish);

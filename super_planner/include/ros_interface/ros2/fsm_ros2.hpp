@@ -37,6 +37,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "mars_quadrotor_msgs/msg/position_command.hpp"
 #include "mars_quadrotor_msgs/msg/polynomial_trajectory.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 
 namespace fsm {
@@ -47,9 +48,11 @@ namespace fsm {
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>::SharedPtr mpc_cmd_pub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_rog_map_srv_;
 
         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
-        rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_;
+        rclcpp::CallbackGroup::SharedPtr exec_cbk_group_, replan_cbk_group_, cmd_cbk_group_, goal_cbk_group_,
+                reset_map_cbk_group_;
 
         mars_quadrotor_msgs::msg::PositionCommand pid_cmd_;
         rog_map::ROGMapROS::Ptr map_ptr_;
@@ -114,19 +117,39 @@ namespace fsm {
             cmd_traj.start_wt_pos = pos_traj.start_WT;
 
             if (!yaw_traj.empty()) {
+                // Yaw is planned at the order passed to YawTrajOpt (typically 3 =
+                // min-acc), NOT order 7 like the position MINCO. Hardcoding
+                // order_yaw=7 made coef_yaw length Ny*8 while pieces only had
+                // 4 coeffs — SuperTrajEval rejected the yaw poly and OMMPC fell
+                // back to velocity-heading (which freezes below ~0.1 m/s), so the
+                // drone appeared to hold a fixed yaw instead of tracking SUPER.
                 cmd_traj.type = cmd_traj.type |
                                 mars_quadrotor_msgs::msg::PolynomialTrajectory::YAW_TRAJ;
                 cmd_traj.piece_num_yaw = yaw_traj.getPieceNum();
-                cmd_traj.order_yaw = 7;
-                double col_size = cmd_traj.order_yaw + 1;
-                cmd_traj.coef_yaw.resize(cmd_traj.piece_num_yaw * col_size);
+                cmd_traj.order_yaw = yaw_traj[0].getDegree();
+                const int col_size = cmd_traj.order_yaw + 1;
+                cmd_traj.coef_yaw.resize(static_cast<size_t>(cmd_traj.piece_num_yaw) *
+                                        static_cast<size_t>(col_size));
                 cmd_traj.time_yaw.resize(cmd_traj.piece_num_yaw);
                 for (int i = 0; i < cmd_traj.piece_num_yaw; i++) {
                     Eigen::VectorXd yaw_coef = yaw_traj[i].getCoeffMat().row(0);
-                    Eigen::Map<Eigen::VectorXd>(&cmd_traj.coef_yaw[col_size * i], col_size) = yaw_coef;
+                    if (yaw_coef.size() != col_size) {
+                        // Keep message self-consistent if a piece has unexpected degree.
+                        cmd_traj.coef_yaw.clear();
+                        cmd_traj.time_yaw.clear();
+                        cmd_traj.piece_num_yaw = 0;
+                        cmd_traj.type = cmd_traj.type &
+                            ~mars_quadrotor_msgs::msg::PolynomialTrajectory::YAW_TRAJ;
+                        break;
+                    }
+                    Eigen::Map<Eigen::VectorXd>(
+                        &cmd_traj.coef_yaw[static_cast<size_t>(col_size) * static_cast<size_t>(i)],
+                        col_size) = yaw_coef;
                     cmd_traj.time_yaw[i] = yaw_traj[i].getDuration();
                 }
-                cmd_traj.start_wt_yaw = yaw_traj.start_WT;
+                if (cmd_traj.piece_num_yaw > 0) {
+                    cmd_traj.start_wt_yaw = yaw_traj.start_WT;
+                }
             }
 
             for (int i = 0; i < cmd_traj.piece_num_pos; i++) {
@@ -281,6 +304,32 @@ namespace fsm {
             setGoalPosiAndYaw(goal_p, goal_q);
         }
 
+        /// Clear ROG local map (phantom occupancy / stale free space) and
+        /// recenter on the robot. Same path as stuck-recovery L2.5.
+        void resetRogMapService(
+                const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+                std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
+            if (!planner_ptr_ || !planner_ptr_->getMap()) {
+                res->success = false;
+                res->message = "planner/map not ready";
+                RCLCPP_ERROR(nh_->get_logger(),
+                             "[Fsm] reset_rog_map failed: planner/map not ready");
+                return;
+            }
+            planner_ptr_->getRobotState(robot_state_);
+            planner_ptr_->getMap()->hardResetLocalMap(robot_state_.p);
+            gi_.new_goal = true;
+            res->success = true;
+            res->message = "ROG local map hard-reset at robot";
+            RCLCPP_WARN(nh_->get_logger(),
+                        "[Fsm] ROG local map HARD RESET at [%.2f %.2f %.2f] "
+                        "(service /planning/reset_rog_map)",
+                        robot_state_.p.x(), robot_state_.p.y(), robot_state_.p.z());
+            cout << YELLOW
+                 << " -- [Fsm] ROG local map HARD RESET via /planning/reset_rog_map at "
+                 << robot_state_.p.transpose() << RESET << endl;
+        }
+
         void init(const rclcpp::Node::SharedPtr nh, const std::string &cfg_path) {
             // TODO: The current implementation uses a lenient QoS configuration for message transmission.
             const rclcpp::QoS qos(rclcpp::QoS(1)
@@ -299,6 +348,20 @@ namespace fsm {
             mpc_cmd_pub_ = nh_->create_publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>(cfg_.mpc_cmd_topic,
                                                                                                  qos);
             path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("fsm/path", qos);
+
+            // Operator / reset_after_crash.sh: wipe ROG sliding map without
+            // restarting SUPER (T6). std_srvs/Trigger so scripts get success+msg.
+            reset_map_cbk_group_ =
+                    nh_->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+            reset_rog_map_srv_ = nh_->create_service<std_srvs::srv::Trigger>(
+                    "/planning/reset_rog_map",
+                    std::bind(&FsmRos2::resetRogMapService, this,
+                              std::placeholders::_1, std::placeholders::_2),
+                    rmw_qos_profile_services_default,
+                    reset_map_cbk_group_);
+            cout << YELLOW
+                 << " -- [Fsm] ROG map reset service: /planning/reset_rog_map"
+                 << RESET << endl;
 
             int cmd_cnt = 0;
 
@@ -380,7 +443,9 @@ namespace fsm {
             cmd_pub_->publish(pid_cmd_);
             if (traj_finish_) {
                 cout << GREEN << " -- [Fsm] Traj finish." << RESET << endl;
-                if (closeToGoal(0.1)) {
+                if (arrivedAtGoal() || closeToGoal(0.1)) {
+                    finish_plan = true;
+                    gi_.new_goal = false;
                     ChangeState("PubCmdCallback", WAIT_GOAL);
                 } else {
                     ChangeState("PubCmdCallback", GENERATE_TRAJ);

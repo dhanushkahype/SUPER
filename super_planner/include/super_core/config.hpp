@@ -52,6 +52,12 @@ namespace super_planner {
         bool visual_process;
         bool frontend_in_known_free;
         bool continuous_following{false};
+        // Below this distance (m) continuous_following uses zero terminal
+        // velocity so the drone decelerates into a static goal instead of
+        // oscillating with half-max_vel terminal conditions forever.
+        double goal_stop_dis{1.20};
+        double goal_arrive_dis{0.60};
+        double goal_arrive_vel{0.30};
 
         double resolution;
         double planning_horizon;
@@ -92,6 +98,9 @@ namespace super_planner {
             loader.LoadParam("super_planner/use_fov_cut", use_fov_cut, false);
             loader.LoadParam("super_planner/frontend_in_known_free", frontend_in_known_free, false);
             loader.LoadParam("super_planner/continuous_following", continuous_following, false);
+            loader.LoadParam("super_planner/goal_stop_dis", goal_stop_dis, 1.20);
+            loader.LoadParam("super_planner/goal_arrive_dis", goal_arrive_dis, 0.60);
+            loader.LoadParam("super_planner/goal_arrive_vel", goal_arrive_vel, 0.30);
             loader.LoadParam("super_planner/safe_corridor_line_max_length", safe_corridor_line_max_length, 3.0);
             loader.LoadParam("super_planner/sensing_horizon", sensing_horizon, 3.0);
             loader.LoadParam("super_planner/obs_skip_num", obs_skip_num, 1);

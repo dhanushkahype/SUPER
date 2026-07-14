@@ -26,6 +26,21 @@ super_planner:
   visual_process: false
   frontend_in_known_free: true
   continuous_following: true
+  # Near a static goal (global path end / final click): brake terminal velocity
+  # and stop continuous replan so the drone settles instead of oscillating.
+  # Orbit carrots stay ~lookahead away and are unaffected.
+  goal_stop_dis: 1.20
+  goal_arrive_dis: 0.60
+  goal_arrive_vel: 0.30
+  # Autonomous stuck recovery (plan fail streaks, ~main/replan tick counts).
+  # L1 re-snap goal free; L2 temporarily plan through unknown;
+  # L2.5 hard-reset in-process ROG local map (clear phantoms);
+  # L3 WAIT_GOAL.
+  stuck_fail_count: 15
+  stuck_relax_count: 30
+  stuck_reset_map_count: 40
+  stuck_reset_map_cooldown: 20.0   # [s] min time between ROG hard resets
+  stuck_give_up_count: 60
   goal_yaw_en: true
   goal_vel_en: false
   corridor_bound_dis: 0.8
@@ -154,13 +169,17 @@ rog_map:
 
   raycasting:
     enable: true                  # was false - needed to clear thickened walls
-    batch_update_size: 2          # was 1
+    batch_update_size: 1          # 1 = apply each scan immediately (more reactive to movers)
     local_update_box: [20, 20, 4] # was [100, 100, 5] - match map size
     ray_range: [0.5, 15]          # was [0.5, 100] - no need to raycast beyond sensor range
     p_min: 0.12
-    p_miss: 0.40                  # was 0.45 - lowered for ~2x faster clearing of dynamic-obstacle trails
-    p_free: 0.30                  # was 0.499 (unreachable) - voxels can now become free
-    p_occ: 0.85
-    p_hit: 0.90                   # unchanged - real walls accumulate fast
-    p_max: 0.92                  # was 0.98 - vacated dynamic cells clear ~3x faster; walls still saturate >p_occ
+    # Dynamic reactivity (Jul 2026): movers leave trails that block A* after they
+    # leave, and slow clearing is the main "stuck after obstacle gone" cause.
+    # p_miss/p_max aggressive for trail clear; watch wall flicker at corners —
+    # back off p_miss toward 0.38 first if static walls shimmer.
+    p_miss: 0.35
+    p_free: 0.28
+    p_occ: 0.80                   # slightly lower so one hit + trail still marks occ fast
+    p_hit: 0.90
+    p_max: 0.88                   # caps saturation depth → vacated cells clear faster
     unk_thresh: 1.0

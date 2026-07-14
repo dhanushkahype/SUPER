@@ -25,6 +25,22 @@
 
 using namespace rog_map;
 using namespace super_utils;
+
+void ROGMap::hardResetLocalMap(const Vec3f& center) {
+    // mapSliding clears the whole volume when the origin jumps farther than
+    // the map extent; then re-center on the robot so new scans fill free space.
+    const Vec3f origin = getLocalMapOrigin();
+    const Vec3f size = getLocalMapSize();
+    const Vec3f far = origin + Vec3f(
+        size.x() + 10.0, size.y() + 10.0, size.z() + 10.0);
+    std::cout << YELLOW
+              << " -- [ROGMap] hardResetLocalMap: clear phantoms, recenter at "
+              << center.transpose() << RESET << std::endl;
+    slideAllMap(far);
+    slideAllMap(center);
+    map_empty_ = true;
+}
+
 void ROGMap::init() {
 
     initProbMap();

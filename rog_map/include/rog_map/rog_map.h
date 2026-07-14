@@ -51,6 +51,12 @@ namespace rog_map {
 
         ~ROGMap() override = default;
 
+        /// Force-clear the sliding local map (prob + inflation [+ esdf]) and
+        /// re-center on @p center. Used by SUPER stuck recovery when phantom
+        /// occupancy blocks planning; next LiDAR scans rebuild free space.
+        /// Prefer this over killing/restarting fsm_node (ROG lives in-process).
+        void hardResetLocalMap(const Vec3f& center);
+
         rog_map::Config getMapConfig() const {
             return cfg_;
         }

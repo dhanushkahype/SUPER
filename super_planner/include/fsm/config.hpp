@@ -48,6 +48,18 @@ namespace fsm {
 
         bool click_yaw_en{};
         bool continuous_following{false};
+        // Arrival settle: even with continuous_following, stop replanning once
+        // the robot is near a *static* goal and slow enough. Orbit carrots stay
+        // ~lookahead away so this does not fire mid-orbit.
+        double goal_arrive_dis{0.60};
+        double goal_arrive_vel{0.30};
+        // Stuck recovery: consecutive PlanFromRest / ReplanOnce failures before
+        // escalating (main FSM + replan timer both count).
+        int stuck_fail_count{15};
+        int stuck_relax_count{30};   // temporarily allow unknown as free
+        int stuck_reset_map_count{40}; // hard-reset in-process ROG local map
+        int stuck_give_up_count{60}; // abandon goal → WAIT_GOAL for upper layer
+        double stuck_reset_map_cooldown{20.0}; // [s] min time between ROG resets
         string cmd_topic, mpc_cmd_topic, click_goal_topic;
         double yaw_dot_max{};
 
@@ -62,6 +74,13 @@ namespace fsm {
             loader.LoadParam("fsm/replan_rate", replan_rate, 10.0);
             loader.LoadParam("fsm/click_height", click_height, 1.5);
             loader.LoadParam("super_planner/continuous_following", continuous_following, false);
+            loader.LoadParam("super_planner/goal_arrive_dis", goal_arrive_dis, 0.60);
+            loader.LoadParam("super_planner/goal_arrive_vel", goal_arrive_vel, 0.30);
+            loader.LoadParam("super_planner/stuck_fail_count", stuck_fail_count, 15);
+            loader.LoadParam("super_planner/stuck_relax_count", stuck_relax_count, 30);
+            loader.LoadParam("super_planner/stuck_reset_map_count", stuck_reset_map_count, 40);
+            loader.LoadParam("super_planner/stuck_give_up_count", stuck_give_up_count, 60);
+            loader.LoadParam("super_planner/stuck_reset_map_cooldown", stuck_reset_map_cooldown, 20.0);
             loader.LoadParam("fsm/cmd_topic", cmd_topic, string("/planning/pos_cmd"));
             loader.LoadParam("fsm/mpc_cmd_topic", mpc_cmd_topic, string("/planning_cmd/mpc"));
             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));

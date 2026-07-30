@@ -123,6 +123,10 @@ namespace super_planner {
         /// should restore the YAML default after a successful plan.
         void setFrontendInKnownFree(bool enable) {
             cfg_.frontend_in_known_free = enable;
+            // Keep the corridor generator's unknown-avoidance in lockstep --
+            // see the frontend_in_known_free comment in config.hpp for why
+            // these must move together.
+            cg_ptr_->setAvoidUnknown(enable);
         }
 
         bool frontendInKnownFree() const {

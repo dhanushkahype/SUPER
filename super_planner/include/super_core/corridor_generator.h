@@ -47,6 +47,7 @@ namespace super_planner {
     using super_utils::Line;
     using namespace color_text;
     using super_utils::OCCUPIED;
+    using super_utils::UNKNOWN;
 
     class CorridorGenerator {
     private:
@@ -57,6 +58,7 @@ namespace super_planner {
         double robot_r_;
         int box_search_skip_num_;
         int iris_iter_num_;
+        bool avoid_unknown_;
         double virtual_groud_height_ = 0.0;
         double virtual_ceil_height_ = 0.0;
         rog_map::ROGMapROS::Ptr map_ptr_;
@@ -84,11 +86,18 @@ namespace super_planner {
                           const double virtual_ceil_height,
                           const double robot_r,
                           const int box_search_skip_num,
-                          const int iris_iter_num);
+                          const int iris_iter_num,
+                          const bool avoid_unknown);
 
         ~CorridorGenerator() = default;
 
         void SetLineNeighborList(const vec_E<Vec3i> &line_seed_neighbor_list);
+
+        // Mirrors SuperPlanner::setFrontendInKnownFree -- see avoid_unknown_
+        // usage / frontend_in_known_free comment in config.hpp.
+        void setAvoidUnknown(bool enable) {
+            avoid_unknown_ = enable;
+        }
 
         typedef std::shared_ptr<CorridorGenerator> Ptr;
 

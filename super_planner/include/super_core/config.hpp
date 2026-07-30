@@ -50,6 +50,22 @@ namespace super_planner {
         bool use_fov_cut, print_log;
         bool goal_vel_en,goal_yaw_en;
         bool visual_process;
+        // frontend_in_known_free (astar.cpp: UNKNOWN_AS_OCCUPIED flag) already
+        // keeps the A* SEED PATH out of unknown cells. But CIRI's convex
+        // safe-flight-corridor built AROUND that seed line (corridor_generator.cpp
+        // GeneratePolytopeFrom{Point,Line}) only ever box-searches
+        // GridType::OCCUPIED for obstacle points -- it never looked at UNKNOWN,
+        // so the WIDE flight tube (what the drone actually flies inside, not
+        // the thin seed line) could still balloon sideways into a
+        // partially-mapped column (occluded/under-observed, mostly UNKNOWN
+        // with only a few confirmed-occupied voxels) sitting just off a
+        // perfectly valid known-free seed path. Fixed by having the corridor
+        // generator also box-search UNKNOWN and feed it to CIRI as obstacle
+        // points -- gated on this SAME flag, so stuck-recovery L2's temporary
+        // relax (fsm.cpp onPlanFailure, "allow through unknown/ghost trails")
+        // relaxes both the seed path AND the corridor together via
+        // SuperPlanner::setFrontendInKnownFree, instead of the corridor still
+        // silently blocking on unknown after the front-end was told it's ok.
         bool frontend_in_known_free;
         bool continuous_following{false};
         // Below this distance (m) continuous_following uses zero terminal

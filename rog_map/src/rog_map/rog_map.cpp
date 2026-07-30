@@ -27,6 +27,15 @@ using namespace rog_map;
 using namespace super_utils;
 
 void ROGMap::hardResetLocalMap(const Vec3f& center) {
+    // Serializes against updateProbMap (cloud-callback thread), which mutates
+    // the same occupancy_buffer_/local_map_origin_i_ concurrently under
+    // MultiThreadedExecutor. This call can come from the FSM replan timer's
+    // callback group (stuck-recovery) or the reset service's -- both
+    // different threads from the cloud callback. Without this lock, a hard
+    // reset firing mid-raycast is a write-write race on a fixed-size buffer
+    // (root cause of an observed "double free or corruption" crash).
+    std::lock_guard<std::mutex> map_lck(map_mtx_);
+
     // mapSliding clears the whole volume when the origin jumps farther than
     // the map extent; then re-center on the robot so new scans fill free space.
     const Vec3f origin = getLocalMapOrigin();

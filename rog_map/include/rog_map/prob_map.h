@@ -118,6 +118,20 @@ namespace rog_map {
             std::mutex raycast_range_mtx;
         } raycast_data_;
 
+        // Guards the core map-mutating paths (updateProbMap's slideAllMap/
+        // raycastProcess and ROGMap::hardResetLocalMap's slideAllMap calls).
+        // Both write occupancy_buffer_/local_map_origin_i_/inf_map_ etc., and
+        // as of the stuck-recovery hard-reset feature they can run on
+        // DIFFERENT threads: updateProbMap from the cloud-subscription
+        // callback group, hardResetLocalMap from the FSM replan timer's
+        // callback group (or the reset service's), both under
+        // MultiThreadedExecutor. Previously only the cloud thread ever wrote
+        // this state, so no lock was needed; a second concurrent writer
+        // without one is a write-write race on a fixed-size buffer -- root
+        // cause of a live "double free or corruption" crash right after a
+        // stuck-recovery hard reset fired mid-raycast.
+        std::mutex map_mtx_;
+
         vector<double> time_consuming_;
         vector<string> time_consuming_name_{"Total", "Raycast", "Update_cache", "Inflation", "PointCloudNumber",
                                             "CacheNumber", "InflationNumber"};

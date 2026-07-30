@@ -306,6 +306,11 @@ void ProbMap::slideAllMap(const rog_map::Vec3f& pos) {
 }
 
 void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
+    // Serializes against ROGMap::hardResetLocalMap, which can run on a
+    // different thread (FSM replan timer / reset service) and mutates the
+    // same occupancy_buffer_/local_map_origin_i_ via slideAllMap. See
+    // map_mtx_ declaration in prob_map.h.
+    std::lock_guard<std::mutex> map_lck(map_mtx_);
     TimeConsuming tc("updateMap", false);
     const Vec3f& pos = pose.first;
     time_consuming_[4] = cloud.size();

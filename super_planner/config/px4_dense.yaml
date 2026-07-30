@@ -52,7 +52,17 @@ super_planner:
   planning_horizon: 7.0
   sensing_horizon: -1
   receding_dis: 1.0
-  robot_r: 0.35
+  # Raised 0.35->0.42 on 23 Jul 2026 after a live crash into a mover: the drone
+  # got boxed in by a dynamic keep-out (global_planner logged "Start has no
+  # free voxel within 3.0m ... likely boxed in by a dynamic keep-out") and
+  # collided during the yield hold. SUPER plans against the RAW ROG-Map cloud
+  # (includes movers, unlike global_planner's OctoMap), so this is the margin
+  # that actually governs how close SUPER's own local trajectory passes a
+  # currently-visible obstacle -- complementary to, not a substitute for,
+  # global_planner's path_yield/dynamic_layer (which govern the global carrot,
+  # not SUPER's local corridor). Revisit corridor widths if this makes tight
+  # spots (~4m corridors in bmich) start producing spurious "boxed in" aborts.
+  robot_r: 0.42
   yaw_dot_max: 1.5
   yaw_mode: 1
   mpc_horizon: 15
@@ -175,11 +185,27 @@ rog_map:
     p_min: 0.12
     # Dynamic reactivity (Jul 2026): movers leave trails that block A* after they
     # leave, and slow clearing is the main "stuck after obstacle gone" cause.
-    # p_miss/p_max aggressive for trail clear; watch wall flicker at corners —
-    # back off p_miss toward 0.38 first if static walls shimmer.
+    # p_miss/p_max aggressive for trail clear.
+    #
+    # FIXED (28 Jul 2026): p_max 0.88 / p_occ 0.80 left only ~0.014 log-odds of
+    # margin between a fully-saturated occupied wall (l_max) and the occupied
+    # threshold (l_occ) -- a SINGLE miss (l_miss=-0.619 at p_miss=0.35) dropped
+    # a solid wall clean out of the OCCUPIED classification. SUPER's corridor
+    # generator (corridor_generator.cpp boxSearch(..., OCCUPIED, ...)) only
+    # avoids cells still classified OCCUPIED, so one grazing/oblique ray at a
+    # wall edge or corner made that wall invisible to the flight corridor --
+    # confirmed live: SUPER planned straight through walls OctoMap (separately,
+    # more conservatively tuned) still correctly showed occupied. p_max raised
+    # and p_occ lowered so ~3 consecutive misses are needed to un-occupy a
+    # saturated cell (was 1); p_miss left alone so new-obstacle hit-confirmation
+    # speed and most of the fast trail-clearing benefit are unchanged (full
+    # clear-to-known-free is now ~6 misses, vs ~5 before this fix and ~8 on the
+    # original pre-reactivity tuning). If wall flicker still appears, raise
+    # p_max further before touching p_miss (that reopens the fast-clearing win
+    # this was tuned for).
     p_miss: 0.35
     p_free: 0.28
-    p_occ: 0.80                   # slightly lower so one hit + trail still marks occ fast
+    p_occ: 0.70                   # lower = more occupied-margin AND faster new-hit occ confirmation
     p_hit: 0.90
-    p_max: 0.88                   # caps saturation depth → vacated cells clear faster
+    p_max: 0.94                   # raised from 0.88 -- restores occupied-margin against single misses
     unk_thresh: 1.0

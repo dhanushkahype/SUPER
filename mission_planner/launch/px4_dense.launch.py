@@ -23,6 +23,12 @@ def generate_launch_description():
     sim_pkg_path = get_package_share_directory('perfect_drone_sim')
     default_rviz_config = os.path.join(sim_pkg_path, 'rviz2', 'fpv.rviz')
 
+    # Allow the caller to swap the RViz config (t6_super.sh points this at
+    # super_camera.rviz when STACK_CAMERA=1, so the gimbal feed is on screen
+    # without a second RViz). Default is unchanged, so camera-off launches
+    # behave exactly as before.
+    rviz_config = os.environ.get('STACK_RVIZ_CONFIG', '') or default_rviz_config
+
     # PX4-specific SUPER config
     super_config_name = 'px4_dense.yaml'
 
@@ -48,7 +54,7 @@ def generate_launch_description():
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
-        arguments=['-d', default_rviz_config],
+        arguments=['-d', rviz_config],
         output='screen'
     )
     ld.add_action(rviz_node)

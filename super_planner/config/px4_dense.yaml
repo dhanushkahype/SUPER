@@ -25,6 +25,40 @@ super_planner:
   print_log: false
   visual_process: false
   frontend_in_known_free: true
+  # CIRI-side half of frontend_in_known_free (see config.hpp). true = the
+  # original lockstep behaviour from 5cf31fb (30 Jul 2026); false stops CIRI
+  # treating UNKNOWN voxels as obstacles while leaving A*'s seed-path
+  # restriction alone.
+  #
+  # Set false on measured evidence. A/B/A over the same 5-goal bmich tour,
+  # 17 Aug 2026, on VERIFIED-CLEAN stacks (exactly one ros_gz_bridge,
+  # /cloud_registered at ~10Hz -- duplicate bridges smear the map and silently
+  # invalidate any measurement; an earlier round of this A/B was contaminated
+  # that way and had to be thrown out).
+  #
+  # Rate-normalised, because raw counts scale with how long the tour ran and
+  # PlanFromRest fail% is confounded (it conflates how OFTEN a from-rest plan
+  # was needed with how often it succeeded -- it read 0.9% and 61.8% on two
+  # identical runs, so do not use it as a headline):
+  #
+  #                              avoid_unknown=true    =false      =false
+  #                                   (A, 218s)      (B, 217s)  (B2, 213s)
+  #   corridor failures / min           1060.3          18.5        14.1
+  #   CIRI infeasible / min              580.8           5.5         8.2
+  #     ...unknown-driven / min          491.4           0.0         0.0
+  #     ...robot_r-driven / min           89.4           5.5         8.2
+  #
+  # ~60x fewer corridor failures, and the unknown-driven population goes to
+  # EXACTLY zero, reproduced across two independent runs. 5cf31fb's concern
+  # (CIRI ballooning into a partially-mapped column) is real but was never
+  # flight-validated, and this is what it costs.
+  #
+  # Honest caveat: all three runs completed the same 5-goal tour with the same
+  # two legs timing out, so mission-level behaviour on THIS tour was unchanged.
+  # Those two legs fail in global_planner ("only 0%/40% observed ... Goal has no
+  # free voxel nearby; aborting plan"), not in SUPER's corridor -- that is the
+  # next bottleneck, not this one.
+  corridor_avoid_unknown: false
   continuous_following: true
   # Near a static goal (global path end / final click): brake terminal velocity
   # and stop continuous replan so the drone settles instead of oscillating.
@@ -52,16 +86,31 @@ super_planner:
   planning_horizon: 7.0
   sensing_horizon: -1
   receding_dis: 1.0
-  # Raised 0.35->0.42 on 23 Jul 2026 after a live crash into a mover: the drone
-  # got boxed in by a dynamic keep-out (global_planner logged "Start has no
-  # free voxel within 3.0m ... likely boxed in by a dynamic keep-out") and
-  # collided during the yield hold. SUPER plans against the RAW ROG-Map cloud
-  # (includes movers, unlike global_planner's OctoMap), so this is the margin
-  # that actually governs how close SUPER's own local trajectory passes a
-  # currently-visible obstacle -- complementary to, not a substitute for,
-  # global_planner's path_yield/dynamic_layer (which govern the global carrot,
-  # not SUPER's local corridor). Revisit corridor widths if this makes tight
-  # spots (~4m corridors in bmich) start producing spurious "boxed in" aborts.
+  # SUPER plans against the RAW ROG-Map cloud (includes movers, unlike
+  # global_planner's OctoMap), so this is the margin that actually governs how
+  # close SUPER's own local trajectory passes a currently-visible obstacle --
+  # complementary to, not a substitute for, global_planner's
+  # path_yield/dynamic_layer (which govern the global carrot, not SUPER's local
+  # corridor).
+  #
+  # History:
+  #   0.35 -> 0.42  23 Jul 2026, after a live crash into a mover: the drone got
+  #                 boxed in by a dynamic keep-out (global_planner logged "Start
+  #                 has no free voxel within 3.0m ... likely boxed in by a
+  #                 dynamic keep-out") and collided during the yield hold.
+  #   0.42 -> 0.35  17 Aug 2026, tried on request and REVERTED. Once
+  #                 corridor_avoid_unknown:false removed the unknown-voxel half,
+  #                 the robot_r half was only ~5-8 CIRI rejections/min, so there
+  #                 was little left to buy -- and 0.35 measured WORSE on a clean
+  #                 stack (60 corridor failures/min vs 14-18 at 0.42) and the
+  #                 aircraft clipped geometry on leg 4 and fell (goal correctly
+  #                 held 1.55m while the airframe dropped to 0.06m, so this was a
+  #                 collision, not the goal-Z ratchet). One crash is not proof
+  #                 that 0.35 is unsafe, but there is no measured upside to
+  #                 justify spending the margin.
+  #
+  # Raising rog_map inflation_step to close the same gap from the front-end side
+  # is separately DISPROVEN -- see the inflation_step comment below.
   robot_r: 0.42
   yaw_dot_max: 1.5
   yaw_mode: 1
@@ -136,6 +185,31 @@ astar:
 rog_map:
   resolution: 0.1
   inflation_resolution: 0.1
+  # DO NOT raise this to match robot_r -- tried and reverted 17 Aug 2026.
+  #
+  # Context: CIRI hard-rejects a corridor seed whenever an obstacle (or, with
+  # frontend_in_known_free, an UNKNOWN voxel) is closer than robot_r=0.42 to the
+  # seed segment -- ciri.cpp:102, a flat FAILED with no degradation. The A*
+  # front-end plans on THIS inflated map and so only certifies 0.20m, which
+  # looked like the whole story: the two halves of the planner disagree, ~95% of
+  # plans are discarded, and the drone rides each committed traj out to its
+  # braking tail before lurching on the rare PlanFromRest (which starts from
+  # ZERO velocity) -- the stop-and-go.
+  #
+  # Raising step 2->4 (0.40m) was flight-tested in bmich and made things WORSE:
+  # PlanFromRest failures went 97% -> 99%, and the dominant error changed to
+  # 16k x "The start point in obstacle, this should not happen" + 18k x
+  # "PathSearch for new path failed". At 0.10m resolution a 0.40m inflation
+  # swallows the drone's OWN position, and the start-shift uses non-inflated
+  # occupancy so it cannot rescue it -- A* then fails before any corridor is
+  # attempted. SUPER produced 48 successful plans in a 5-minute tour and the
+  # aircraft ran away 133m. Measured CIRI infeasibility distances also showed
+  # only 41% sit at the inflation edge; 59% are under 0.30m, i.e. UNKNOWN voxels
+  # touching the path (unk_inflation_en is false, so the front-end is blind to
+  # them). Inflation was never going to close that half.
+  #
+  # The gap has to be closed from the CIRI side (lower robot_r and/or drop
+  # avoid_unknown_), not by inflating the front-end. See the 17 Aug analysis.
   inflation_step: 2
   unk_inflation_en: false
   unk_inflation_step: 1

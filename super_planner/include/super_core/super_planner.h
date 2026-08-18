@@ -126,7 +126,9 @@ namespace super_planner {
             // Keep the corridor generator's unknown-avoidance in lockstep --
             // see the frontend_in_known_free comment in config.hpp for why
             // these must move together.
-            cg_ptr_->setAvoidUnknown(enable);
+            // corridor_avoid_unknown gates the CIRI half independently, so a
+            // relax can only ever loosen the corridor, never tighten it.
+            cg_ptr_->setAvoidUnknown(enable && cfg_.corridor_avoid_unknown);
         }
 
         bool frontendInKnownFree() const {

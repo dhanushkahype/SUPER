@@ -67,6 +67,20 @@ namespace super_planner {
         // SuperPlanner::setFrontendInKnownFree, instead of the corridor still
         // silently blocking on unknown after the front-end was told it's ok.
         bool frontend_in_known_free;
+        // Master switch for the CIRI-side half of the behaviour described
+        // above. Effective avoidance is (frontend_in_known_free &&
+        // corridor_avoid_unknown), so the default (true) is bit-identical to
+        // the original lockstep and stuck-recovery L2 still relaxes both.
+        //
+        // Setting this false isolates the corridor from the front end: A*
+        // keeps its UNKNOWN_AS_OCCUPIED seed-path restriction, but CIRI stops
+        // feeding UNKNOWN voxels to comvexDecomposition. That matters because
+        // unk_inflation_en is false, so the front end is blind to unknown
+        // while CIRI hard-rejects any seed with an unknown voxel closer than
+        // robot_r (ciri.cpp:102) -- measured 17 Aug 2026 as 59% of all CIRI
+        // rejections, clustered at ~0.12m. This flag exists to A/B that half
+        // without also changing where A* is willing to route.
+        bool corridor_avoid_unknown{true};
         bool continuous_following{false};
         // Below this distance (m) continuous_following uses zero terminal
         // velocity so the drone decelerates into a static goal instead of
@@ -113,6 +127,7 @@ namespace super_planner {
             loader.LoadParam("super_planner/visual_process", visual_process, false);
             loader.LoadParam("super_planner/use_fov_cut", use_fov_cut, false);
             loader.LoadParam("super_planner/frontend_in_known_free", frontend_in_known_free, false);
+            loader.LoadParam("super_planner/corridor_avoid_unknown", corridor_avoid_unknown, true);
             loader.LoadParam("super_planner/continuous_following", continuous_following, false);
             loader.LoadParam("super_planner/goal_stop_dis", goal_stop_dis, 1.20);
             loader.LoadParam("super_planner/goal_arrive_dis", goal_arrive_dis, 0.60);

@@ -51,7 +51,8 @@ namespace super_planner {
                                                       cfg_.robot_r,
                                                       cfg_.obs_skip_num,
                                                       cfg_.iris_iter_num,
-                                                      cfg_.frontend_in_known_free);
+                                                      cfg_.frontend_in_known_free &&
+                                                      cfg_.corridor_avoid_unknown);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
 
 

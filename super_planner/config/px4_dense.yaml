@@ -254,7 +254,24 @@ rog_map:
   raycasting:
     enable: true                  # was false - needed to clear thickened walls
     batch_update_size: 1          # 1 = apply each scan immediately (more reactive to movers)
-    local_update_box: [20, 20, 4] # was [100, 100, 5] - match map size
+    # MUST match map_size. Was [20,20,4] against map_size Z=10 (the comment
+    # here used to read "match map size" and had stopped being true when
+    # map_size Z was grown 4->10): a return outside this box sets
+    # update_hit=false and is used ONLY to carve FREE space up to the box
+    # face, so occupancy hits were confined to a +/-2.0m band around the
+    # AIRCRAFT inside a 10m-tall map and ~60%% of the map's height could never
+    # receive one. Measured 20 Aug 2026 on four bmich walls: ROG-Map's
+    # occupancy stopped within 0.05m of drone_z+2.0 while OctoMap held the
+    # same wall to its true 4.0m top from the same cloud at the same instant.
+    # Fixing it closed the gap at every measurement point (see
+    # rogmap_map_gap.md and runs/val/2026-08-20_10-*_boxz-*_clean).
+    #
+    # Cost, measured on the same A/B: per-update mean 9.79 -> 14.12ms (+44%%),
+    # p95 15.7 -> 22.4ms, i.e. 16%% -> 22%% of the 100ms budget at 10Hz, with
+    # zero updates over budget. At MATCHED workload (binned by CacheNumber)
+    # the cost is flat to slightly lower -- the extra time is 64%% more cells
+    # written, which is the point, not overhead.
+    local_update_box: [20, 20, 10]
     ray_range: [0.5, 15]          # was [0.5, 100] - no need to raycast beyond sensor range
     p_min: 0.12
     # Dynamic reactivity (Jul 2026): movers leave trails that block A* after they

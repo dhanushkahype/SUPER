@@ -155,6 +155,9 @@ namespace fsm {
         bool frontend_relaxed_{false};
         bool frontend_known_free_default_{true};
         double last_rog_reset_wall_s_{-1.0};
+        bool has_giveup_goal_{false};
+        Vec3f last_giveup_goal_{Vec3f::Zero()};
+        double last_giveup_wall_s_{-1.0};
 
         void WriteTimeToLog();
 

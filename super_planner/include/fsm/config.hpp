@@ -60,6 +60,9 @@ namespace fsm {
         int stuck_reset_map_count{40}; // hard-reset in-process ROG local map
         int stuck_give_up_count{60}; // abandon goal → WAIT_GOAL for upper layer
         double stuck_reset_map_cooldown{20.0}; // [s] min time between ROG resets
+        double stuck_giveup_regoal_cooldown{5.0}; // [s] min time before re-accepting
+        // a goal matching the one just abandoned at L3 (upstream re-publishing the
+        // same unreachable goal must not immediately restart the fail cycle)
         string cmd_topic, mpc_cmd_topic, click_goal_topic;
         double yaw_dot_max{};
 
@@ -81,6 +84,7 @@ namespace fsm {
             loader.LoadParam("super_planner/stuck_reset_map_count", stuck_reset_map_count, 40);
             loader.LoadParam("super_planner/stuck_give_up_count", stuck_give_up_count, 60);
             loader.LoadParam("super_planner/stuck_reset_map_cooldown", stuck_reset_map_cooldown, 20.0);
+            loader.LoadParam("super_planner/stuck_giveup_regoal_cooldown", stuck_giveup_regoal_cooldown, 5.0);
             loader.LoadParam("fsm/cmd_topic", cmd_topic, string("/planning/pos_cmd"));
             loader.LoadParam("fsm/mpc_cmd_topic", mpc_cmd_topic, string("/planning_cmd/mpc"));
             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));

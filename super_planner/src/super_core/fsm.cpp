@@ -296,6 +296,9 @@ namespace fsm {
             finish_plan = true;
             gi_.new_goal = false;
             plan_fail_streak_ = 0;
+            has_giveup_goal_ = true;
+            last_giveup_goal_ = gi_.goal_p;
+            last_giveup_wall_s_ = ros_ptr_->getSimTime();
             if (frontend_relaxed_) {
                 planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
                 frontend_relaxed_ = false;
@@ -326,6 +329,24 @@ namespace fsm {
             0.1) {
             //                print(fg(color::gray), " -- [Rviz] Too close to goal, skip this target.\n");
             return;
+        }
+
+        // A goal we just gave up on (L3) after exhausting the recovery ladder
+        // is not reachable from here right now. If the upstream source (e.g. a
+        // global_planner carrot) re-publishes the same point, accepting it
+        // immediately would just restart the identical fail cycle from streak
+        // zero. Hold it off for a short cooldown instead of thrashing.
+        if (has_giveup_goal_) {
+            const double since_giveup = ros_ptr_->getSimTime() - last_giveup_wall_s_;
+            if ((gi_.goal_p - last_giveup_goal_).norm() < 0.3 &&
+                since_giveup < cfg_.stuck_giveup_regoal_cooldown) {
+                cout << YELLOW
+                     << " -- [Fsm] Ignoring re-request for goal just given up on "
+                     << since_giveup << "s ago (cooldown "
+                     << cfg_.stuck_giveup_regoal_cooldown << "s)" << RESET << endl;
+                return;
+            }
+            has_giveup_goal_ = false;
         }
 
         if (cfg_.click_yaw_en) {

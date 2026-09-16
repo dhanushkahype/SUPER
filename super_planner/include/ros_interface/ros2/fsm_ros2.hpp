@@ -38,11 +38,16 @@
 #include "mars_quadrotor_msgs/msg/position_command.hpp"
 #include "mars_quadrotor_msgs/msg/polynomial_trajectory.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include <mutex>
 
 
 namespace fsm {
     class FsmRos2 : public Fsm {
 
+        bool autonomy_managed_{false};
+        std::recursive_mutex autonomy_mutex_;
+        int64_t goal_cutoff_ns_{0};
+        rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_execution_srv_;
         rclcpp::Node::SharedPtr nh_;
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PositionCommand>::SharedPtr cmd_pub_;
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>::SharedPtr mpc_cmd_pub_;
@@ -298,6 +303,9 @@ namespace fsm {
         }
 
         void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
+            if (autonomy_managed_) guard.lock();
+            if (autonomy_managed_ && rclcpp::Time(msg->header.stamp).nanoseconds() < goal_cutoff_ns_) return;
             super_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
             super_utils::Quatf goal_q = super_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
                                                            msg->pose.orientation.y, msg->pose.orientation.z};
@@ -339,6 +347,21 @@ namespace fsm {
 
             // 初始化参数读取
             nh_ = nh;
+            autonomy_managed_ = nh_->declare_parameter<bool>("autonomy_managed", false);
+            if (autonomy_managed_) {
+                reset_execution_srv_ = nh_->create_service<std_srvs::srv::Trigger>(
+                    "/autonomy/reset_super",
+                    [this](std_srvs::srv::Trigger::Request::SharedPtr,
+                           std_srvs::srv::Trigger::Response::SharedPtr res) {
+                        std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+                        goal_cutoff_ns_ = nh_->now().nanoseconds();
+                        gi_.new_goal = false;
+                        finish_plan = true;
+                        machine_state_ = WAIT_GOAL;
+                        res->success = true;
+                        res->message = "Execution cancelled; next goal plans from measured state";
+                    });
+            }
             cfg_ = Config(cfg_path);
             map_ptr_ = std::make_shared<rog_map::ROGMapROS>(nh_, cfg_path);
             // 初始化Planner
@@ -428,6 +451,8 @@ namespace fsm {
         }
 
         void pubCmdTimerCallback() {
+            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
+            if (autonomy_managed_) guard.lock();
             if (stop) {
                 return;
             }
@@ -454,10 +479,14 @@ namespace fsm {
         }
 
         void replanTimerCallback() {
+            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
+            if (autonomy_managed_) guard.lock();
             callReplanOnce();
         }
 
         void mainFsmTimerCallback() {
+            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
+            if (autonomy_managed_) guard.lock();
             callMainFsmOnce();
         }
 

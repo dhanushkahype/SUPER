@@ -41,6 +41,8 @@
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <octomap_msgs/conversions.h>
+#include <octomap/OcTree.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include <visualization_msgs/msg/marker_array.hpp>
 
@@ -53,6 +55,7 @@ namespace rog_map {
 
     class ROGMapROS : public ROGMap {
         rclcpp::Node::SharedPtr nh_;
+        rclcpp::Subscription<octomap_msgs::msg::Octomap>::SharedPtr static_prior_sub_;
         std::shared_ptr<tf2_ros::TransformBroadcaster> br_map_ego_;
 
 
@@ -323,6 +326,28 @@ namespace rog_map {
             br_map_ego_ = std::make_shared<tf2_ros::TransformBroadcaster>(nh_);
 
             init();
+            if (nh_->declare_parameter<bool>("static_prior.enable", true)) {
+                static_prior_sub_ = nh_->create_subscription<octomap_msgs::msg::Octomap>(
+                    "/octomap_full", rclcpp::QoS(1).reliable(),
+                    [this](octomap_msgs::msg::Octomap::ConstSharedPtr msg) {
+                        if (msg->header.frame_id != "world") {
+                            RCLCPP_ERROR_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 5000,
+                                "Static prior rejected: expected world frame");
+                            return;
+                        }
+                        std::unique_ptr<octomap::AbstractOcTree> raw(octomap_msgs::msgToMap(*msg));
+                        auto * tree = dynamic_cast<octomap::OcTree *>(raw.get());
+                        if (!tree) return;
+                        std::vector<OccupiedBox> boxes;
+                        for (auto it = tree->begin_leafs(); it != tree->end_leafs(); ++it) {
+                            if (!tree->isNodeOccupied(*it)) continue;
+                            const Vec3f center(it.getX(), it.getY(), it.getZ());
+                            const Vec3f half = Vec3f::Constant(it.getSize() * 0.5);
+                            boxes.push_back({center - half, center + half});
+                        }
+                        setOccupiedPrior(std::move(boxes));
+                    });
+            }
             /// Initialize visualization module
             if (cfg_.visualization_en) {
                 vm_.occ_pub = nh_->create_publisher<sensor_msgs::msg::PointCloud2>("rog_map/occ", qos);

@@ -99,7 +99,16 @@ namespace rog_map {
 
         void updateProbMap(const PointCloud &cloud, const Pose &pose);
 
+        struct OccupiedBox { Vec3f min, max; };
+        void setOccupiedPrior(std::vector<OccupiedBox> boxes) {
+            std::lock_guard<std::mutex> lock(map_mtx_);
+            occupied_prior_ = std::move(boxes);
+        }
+
     protected:
+        // Called only while map_mtx_ is held, after raw-ray updates.
+        void applyOccupiedPrior();
+        std::vector<OccupiedBox> occupied_prior_;
         rog_map::Config cfg_;
         InfMap::Ptr inf_map_;
         FreeCntMap::Ptr fcnt_map_;

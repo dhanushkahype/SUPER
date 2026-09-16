@@ -294,6 +294,30 @@ void ProbMap::updateOccPointCloud(const PointCloud& input_cloud) {
     map_empty_ = false;
 }
 
+void ProbMap::applyOccupiedPrior() {
+    const Vec3f origin = getLocalMapOrigin();
+    const Vec3f half = getLocalMapSize() * 0.5;
+    const int hits = static_cast<int>(std::ceil((cfg_.l_max - cfg_.l_min) / cfg_.l_hit)) + 1;
+    for (const auto & box : occupied_prior_) {
+        const Vec3f low = box.min.cwiseMax(origin - half);
+        const Vec3f high = box.max.cwiseMin(origin + half);
+        if ((low.array() >= high.array()).any()) continue;
+        Vec3i first, last;
+        posToGlobalIndex(low + Vec3f::Constant(1e-6), first);
+        posToGlobalIndex(high - Vec3f::Constant(1e-6), last);
+        for (int x = first.x(); x <= last.x(); ++x)
+        for (int y = first.y(); y <= last.y(); ++y)
+        for (int z = first.z(); z <= last.z(); ++z) {
+            const Vec3i id(x, y, z);
+            if (!insideLocalMap(id)) continue;
+            Vec3f p;
+            globalIndexToPos(id, p);
+            if (p.z() < cfg_.virtual_ground_height || p.z() > cfg_.virtual_ceil_height) continue;
+            hitPointUpdate(p, getHashIndexFromPos(p), hits);
+        }
+    }
+}
+
 void ProbMap::slideAllMap(const rog_map::Vec3f& pos) {
     mapSliding(pos);
     inf_map_->mapSliding(pos);
@@ -318,6 +342,7 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
         std::cout << YELLOW << " -- [ROGMapCore] cur_pose out of map range, reset the map." << RESET << std::endl;
         std::cout << YELLOW << " -- [ROGMapCore] Sliding to map center at: " << pos.transpose() << RESET << std::endl;
         slideAllMap(pos);
+        applyOccupiedPrior();
         return;
     }
 
@@ -352,14 +377,6 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
         time_consuming_[2] = t_update.stop();
         map_empty_ = false;
     }
-    inf_map_->getInflationNumAndTime(time_consuming_[6], time_consuming_[3]);
-    time_consuming_[0] = tc.stop();
-
-    /* Update ESDF map */
-    if (cfg_.esdf_en) {
-        esdf_map_->updateESDF3D(pos);
-    }
-
     /* For the first frame, clear all unknown around the robot */
     static bool first = true;
     if (first) {
@@ -377,6 +394,12 @@ void ProbMap::updateProbMap(const PointCloud& cloud, const Pose& pose) {
             }
         }
     }
+    // Persistent static evidence survives raw-sensor blind spots and local
+    // window resets. No synthetic rays, bound changes, or shared-cache flush.
+    applyOccupiedPrior();
+    inf_map_->getInflationNumAndTime(time_consuming_[6], time_consuming_[3]);
+    if (cfg_.esdf_en) esdf_map_->updateESDF3D(pos);
+    time_consuming_[0] = tc.stop();
 }
 
 GridType ProbMap::getGridType(Vec3i& id_g) const {

@@ -29,6 +29,8 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(octomap_msgs REQUIRED)
+find_package(octomap REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(PCL REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -39,18 +41,21 @@ set(includes
         ${Eigen_INCLUDE_DIRS}
         #            ${OpenCV_INCLUDE_DIRS}
         ${PCL_INCLUDE_DIRS}
+        ${OCTOMAP_INCLUDE_DIRS}
 )
 
 set(third_party_libs
         #            ${OpenCV_LIBRARIES}
         ${PCL_LIBRARIES}
         yaml-cpp
+        ${OCTOMAP_LIBRARIES}
 )
 
 set(ros_libs
         rclcpp
         std_msgs
         nav_msgs
+        octomap_msgs
         geometry_msgs
         visualization_msgs
         pcl_conversions
@@ -89,8 +94,17 @@ ament_export_libraries(${PROJECT_NAME}
         ${third_party_libs}
 )
 ament_export_include_directories(${includes})
+ament_export_dependencies(octomap_msgs octomap)
 install(DIRECTORY include/
         DESTINATION include/
 )
+
+if(BUILD_TESTING)
+    enable_testing()
+    add_executable(test_static_prior test/test_static_prior.cpp)
+    target_link_libraries(test_static_prior rog_map)
+    add_test(NAME static_prior_regressions COMMAND test_static_prior
+        ${CMAKE_CURRENT_SOURCE_DIR}/../super_planner/config/px4_dense.yaml)
+endif()
 
 ament_package()

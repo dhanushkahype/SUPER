@@ -47,6 +47,7 @@ void ROGMap::hardResetLocalMap(const Vec3f& center) {
               << center.transpose() << RESET << std::endl;
     slideAllMap(far);
     slideAllMap(center);
+    applyOccupiedPrior();
     map_empty_ = true;
 }
 

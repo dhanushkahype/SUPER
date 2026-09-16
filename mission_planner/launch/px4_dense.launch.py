@@ -68,6 +68,7 @@ def generate_launch_description():
         output='screen',
         parameters=[{
             'config_name': super_config_name,
+            'autonomy_managed': os.environ.get('STACK_AUTONOMY_MANAGED', 'false') == 'true',
         }]
     )
     ld.add_action(super_node)

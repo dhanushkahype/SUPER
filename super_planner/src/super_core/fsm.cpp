@@ -101,8 +101,11 @@ namespace fsm {
             }
         }
 
+        const double replan_s = replan_once_time.stop();
+        publishTrajectoryPlanStatus(ret_code, replan_s,
+                                    ret_code == SUCCESS || ret_code == FINISH);
         planner_ptr_->getModuleTimeConsuming(log_module_time);
-        log_module_time[log_module_time.size() - 2] = replan_once_time.stop();
+        log_module_time[log_module_time.size() - 2] = replan_s;
         // save on log
         replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
         WriteTimeToLog();

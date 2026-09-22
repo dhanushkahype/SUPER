@@ -180,6 +180,10 @@ namespace fsm {
 
         virtual void publishPolyTraj() = 0;
 
+        // Diagnostic-only: report every planner result, including failures.
+        virtual void publishTrajectoryPlanStatus(RET_CODE result, double planning_s,
+                                                 bool committed) = 0;
+
         virtual void publishCurPoseToPath() = 0;
 
         virtual void resetVisualizedPath() = 0;

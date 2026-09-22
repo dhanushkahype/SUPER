@@ -37,6 +37,7 @@
 #include "nav_msgs/msg/odometry.hpp"
 #include "mars_quadrotor_msgs/msg/position_command.hpp"
 #include "mars_quadrotor_msgs/msg/polynomial_trajectory.hpp"
+#include "operator_msgs/msg/trajectory_plan_status.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include <mutex>
 
@@ -51,6 +52,7 @@ namespace fsm {
         rclcpp::Node::SharedPtr nh_;
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PositionCommand>::SharedPtr cmd_pub_;
         rclcpp::Publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>::SharedPtr mpc_cmd_pub_;
+        rclcpp::Publisher<operator_msgs::msg::TrajectoryPlanStatus>::SharedPtr trajectory_status_pub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_rog_map_srv_;
@@ -90,6 +92,31 @@ namespace fsm {
             mars_quadrotor_msgs::msg::PolynomialTrajectory cmd_traj;
             getCommittedTrajectory(cmd_traj);
             mpc_cmd_pub_->publish(cmd_traj);
+        }
+
+        void publishTrajectoryPlanStatus(RET_CODE result, double planning_s,
+                                         bool committed) override {
+            operator_msgs::msg::TrajectoryPlanStatus status;
+            ros_ptr_->getSimTime(status.header.stamp.sec, status.header.stamp.nanosec);
+            status.header.frame_id = "world";
+            status.replan_id = ++replan_id_;
+            status.return_code = static_cast<int32_t>(result);
+            status.planning_ms = static_cast<float>(planning_s * 1000.0);
+            status.committed = committed;
+            switch (result) {
+                case super_utils::SUCCESS: status.outcome = "success"; break;
+                case super_utils::FINISH: status.outcome = "finish"; break;
+                case super_utils::EMER: status.outcome = "emergency"; break;
+                case super_utils::NEW_TRAJ: status.outcome = "new_trajectory"; break;
+                default: status.outcome = "failed"; break;
+            }
+            if (committed) {
+                mars_quadrotor_msgs::msg::PolynomialTrajectory trajectory;
+                getCommittedTrajectory(trajectory);
+                status.piece_count = trajectory.piece_num_pos;
+                for (const auto duration : trajectory.time_pos) status.duration_s += duration;
+            }
+            trajectory_status_pub_->publish(status);
         }
 
         void getOneHeartBeatMsg(mars_quadrotor_msgs::msg::PolynomialTrajectory &heartbeat, bool &traj_finish) {
@@ -370,6 +397,8 @@ namespace fsm {
             cmd_pub_ = nh_->create_publisher<mars_quadrotor_msgs::msg::PositionCommand>(cfg_.cmd_topic, qos);
             mpc_cmd_pub_ = nh_->create_publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>(cfg_.mpc_cmd_topic,
                                                                                                  qos);
+            trajectory_status_pub_ = nh_->create_publisher<operator_msgs::msg::TrajectoryPlanStatus>(
+                    "/super/trajectory_plan_status", rclcpp::QoS(10).reliable());
             path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("fsm/path", qos);
 
             // Operator / reset_after_crash.sh: wipe ROG sliding map without
@@ -449,6 +478,8 @@ namespace fsm {
             pid_cmd_.kv[1] = 3.4;
             pid_cmd_.kv[2] = 4.0;
         }
+
+        uint64_t replan_id_{0};
 
         void pubCmdTimerCallback() {
             std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);

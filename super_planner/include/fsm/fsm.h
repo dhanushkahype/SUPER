@@ -120,6 +120,14 @@ namespace fsm {
                        replan_logs_.size() - 1, replan_logs_.back().getRetCode());
         }
 
+        void setManeuverGoal(const Vec3f &goal) {
+            gi_.goal_p = goal;
+            gi_.goal_yaw = NAN;
+            gi_.new_goal = true;
+            started_ = true;
+            finish_plan = false;
+        }
+
         Eigen::Quaterniond eulerToQuaternion(double roll, double pitch, double yaw) {
             double half_roll = roll * 0.5;
             double half_pitch = pitch * 0.5;

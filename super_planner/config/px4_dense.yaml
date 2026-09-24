@@ -13,6 +13,10 @@ fsm:
   click_height: -6.0          # disabled (any value <= -5 passes goal Z through unchanged)
   click_yaw_en: true
   replan_rate: 10.0
+  # RViz trail only: keep a five-minute, 2 Hz history. This must stay bounded
+  # for indefinite missions such as orbit.
+  visualization_path_max_poses: 600
+  visualization_path_rate: 2.0
   cmd_topic: "/planning/pos_cmd"
   mpc_cmd_topic: "/planning_cmd/poly_traj"
   timer_en: true

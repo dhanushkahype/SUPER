@@ -24,6 +24,7 @@
 #include <traj_opt/exp_traj_optimizer_s4.h>
 #include <utils/optimization/lbfgs.h>
 #include <ros_interface/ros_interface.hpp>
+#include <utils/geometry/maneuver_reference.hpp>
 
 #define POS_IDX 1
 #define VEL_IDX 2
@@ -52,6 +53,7 @@ void ExpTrajOpt::constraintsFunctional(const VecDf &T,
                                        const int &integralResolution,
                                        const VecDf &magnitudeBounds,
                                        const VecDf &penaltyWeights,
+                                       const vec_Vec3f &maneuver_path,
                                        flatness::FlatnessMap &flatMap,
         // outputs
                                        double &cost,
@@ -133,6 +135,19 @@ void ExpTrajOpt::constraintsFunctional(const VecDf &T,
                         tmp_cost += weightPos * violaPosPena;
                     }
                 }
+            }
+
+            if (maneuver_path.size() >= 2) {
+                const auto nearest = super_planner::nearestManeuverPoint(pos, maneuver_path);
+                const Vec3f offset = pos - nearest;
+                // The maneuver reference is the intended flight path, not only
+                // a loose safety envelope. A weak penalty let the optimizer
+                // repeatedly cut a 2 m orbit to roughly 1.3 m in clear space.
+                // Keep the deviation limit for obstacle detours, but strongly
+                // prefer the nominal curve whenever the corridor permits it.
+                constexpr double path_weight = 1000.0;
+                gradPos += 2.0 * path_weight * offset;
+                tmp_cost += path_weight * offset.squaredNorm();
             }
 
             /* 2.2  For attract point cost  */
@@ -315,6 +330,7 @@ double ExpTrajOpt::costFunctional(void *ptr,
                           waypoint_attractor, waypoint_attractor_dead_d,
                           smooth_eps, integral_res,
                           magnitudeBounds, penaltyWeights,
+                          obj.maneuver_path,
                           quadrotor_flatness,
                           cost, partialGradByTimes, partialGradByCoeffs, obj.penalty_log);
 
@@ -914,6 +930,30 @@ bool ExpTrajOpt::optimize(const StatePVAJ &headPVAJ, const StatePVAJ &tailPVAJ,
     if (success && std::isinf(optimize(out_traj, cfg_.opt_accuracy))) {
         cout << YELLOW << " -- [SUPER] Minco exp_traj opt failed." << RESET << endl;
         success = false;
+    }
+
+    if (success && opt_vars.maneuver_path.size() >= 2) {
+        const double duration = out_traj.getTotalDuration();
+        const int samples = std::max(1, static_cast<int>(std::ceil(duration / 0.05)));
+        for (int i = 0; i <= samples; ++i) {
+            const Vec3f position = out_traj.getPos(duration * i / samples);
+            const double error = (position - super_planner::nearestManeuverPoint(
+                position, opt_vars.maneuver_path)).norm();
+            if (error > opt_vars.maneuver_max_deviation) {
+                ros_ptr_->warn(" -- [SUPER] Maneuver deviation {:.2f} m exceeds {:.2f} m",
+                               error, opt_vars.maneuver_max_deviation);
+                success = false;
+                out_traj.clear();
+                break;
+            }
+            if (out_traj.getVel(duration * i / samples).norm() >
+                opt_vars.maneuver_speed_limit * 1.05 + 0.05) {
+                ros_ptr_->warn(" -- [SUPER] Maneuver speed exceeds requested limit");
+                success = false;
+                out_traj.clear();
+                break;
+            }
+        }
     }
 
     penalty_log << opt_vars.penalty_log.transpose() << endl;

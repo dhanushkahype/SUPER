@@ -38,6 +38,7 @@ include_directories(
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rog_map REQUIRED)
+find_package(traj_manager REQUIRED)
 find_package(mars_quadrotor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -74,6 +75,7 @@ set(ros_libs
         geometry_msgs
         visualization_msgs
         rog_map
+        traj_manager
         tf2_ros
         pcl_conversions
 

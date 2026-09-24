@@ -69,7 +69,9 @@ def generate_launch_description():
         parameters=[{
             'config_name': super_config_name,
             'autonomy_managed': os.environ.get('STACK_AUTONOMY_MANAGED', 'false') == 'true',
-        }]
+        }],
+        **({'prefix': 'gdb -q -batch -ex run -ex "thread apply all bt 15" --args'}
+           if os.environ.get('STACK_T6_GDB', '0') == '1' else {}),
     )
     ld.add_action(super_node)
 

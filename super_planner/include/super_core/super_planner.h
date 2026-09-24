@@ -91,6 +91,15 @@ namespace super_planner {
             bool goal_valid{true};
         } gi_;
 
+        struct ManeuverReference {
+            vec_Vec3f points;
+            Vec3f terminal_tangent{0, 0, 0};
+            double desired_speed{0.0};
+            double max_deviation{0.0};
+        } maneuver_reference_;
+
+        bool maneuver_reference_active_{false};
+
         FOVChecker::Ptr fov_checker_;
 
         CmdTraj cmd_traj_info_;
@@ -118,6 +127,14 @@ namespace super_planner {
         bool goalValid() const {
             return gi_.goal_valid;
         }
+
+        bool setManeuverReference(const vec_Vec3f &points,
+                                  const Vec3f &terminal_tangent,
+                                  double desired_speed, double max_deviation);
+
+        void clearManeuverReference();
+
+        bool maneuverReferenceActive() const { return maneuver_reference_active_; }
 
         /// Temporary override for stuck recovery (phantom occupancy). Caller
         /// should restore the YAML default after a successful plan.
@@ -164,6 +181,10 @@ namespace super_planner {
     private:
         RET_CODE generateExpTraj(ExpTraj &last_exp_traj_info,
                                  ExpTraj &out_exp_traj_info);
+
+        bool appendManeuverGuide(vec_Vec3f &guide_path,
+                                 vector<double> &guide_stamp,
+                                 double remaining_horizon);
 
         /* For Backup traj generation */
         RET_CODE generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info);

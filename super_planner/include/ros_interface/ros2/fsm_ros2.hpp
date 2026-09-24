@@ -39,6 +39,8 @@
 #include "mars_quadrotor_msgs/msg/polynomial_trajectory.hpp"
 #include "operator_msgs/msg/trajectory_plan_status.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "std_msgs/msg/string.hpp"
+#include "traj_manager/msg/maneuver_reference.hpp"
 #include <mutex>
 
 
@@ -46,6 +48,7 @@ namespace fsm {
     class FsmRos2 : public Fsm {
 
         bool autonomy_managed_{false};
+        double last_maneuver_reference_s_{-1.0};
         std::recursive_mutex autonomy_mutex_;
         int64_t goal_cutoff_ns_{0};
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_execution_srv_;
@@ -55,6 +58,8 @@ namespace fsm {
         rclcpp::Publisher<operator_msgs::msg::TrajectoryPlanStatus>::SharedPtr trajectory_status_pub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+        rclcpp::Subscription<traj_manager::msg::ManeuverReference>::SharedPtr maneuver_sub_;
+        rclcpp::Subscription<std_msgs::msg::String>::SharedPtr reference_owner_sub_;
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_rog_map_srv_;
 
         rclcpp::TimerBase::SharedPtr execution_timer_, replan_timer_, cmd_timer_;
@@ -65,14 +70,25 @@ namespace fsm {
         rog_map::ROGMapROS::Ptr map_ptr_;
         mars_quadrotor_msgs::msg::PositionCommand latest_cmd;
         nav_msgs::msg::Path path;
+        double next_path_pub_time_{0.0};
 
         vector<mars_quadrotor_msgs::msg::PositionCommand> cmd_logs_;
 
         void resetVisualizedPath() override {
             path.poses.clear();
+            next_path_pub_time_ = 0.0;
         }
 
         void publishCurPoseToPath() override {
+            if (cfg_.visualization_path_max_poses <= 0 ||
+                cfg_.visualization_path_rate <= 0.0) {
+                return;
+            }
+
+            const double sim_time = ros_ptr_->getSimTime();
+            if (sim_time < next_path_pub_time_) return;
+            next_path_pub_time_ = sim_time + 1.0 / cfg_.visualization_path_rate;
+
             path.header.frame_id = "world";
             ros_ptr_->getSimTime(path.header.stamp.sec, path.header.stamp.nanosec);
             geometry_msgs::msg::PoseStamped pose;
@@ -84,6 +100,10 @@ namespace fsm {
             pose.pose.orientation.y = robot_state_.q.y();
             pose.pose.orientation.z = robot_state_.q.z();
             pose.pose.orientation.w = robot_state_.q.w();
+            const auto max_poses = static_cast<size_t>(cfg_.visualization_path_max_poses);
+            if (path.poses.size() >= max_poses) {
+                path.poses.erase(path.poses.begin());
+            }
             path.poses.push_back(pose);
             path_pub_->publish(path);
         }
@@ -330,13 +350,62 @@ namespace fsm {
         }
 
         void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
-            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
-            if (autonomy_managed_) guard.lock();
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             if (autonomy_managed_ && rclcpp::Time(msg->header.stamp).nanoseconds() < goal_cutoff_ns_) return;
+            planner_ptr_->clearManeuverReference();
+            last_maneuver_reference_s_ = -1.0;
             super_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
             super_utils::Quatf goal_q = super_utils::Quatf{msg->pose.orientation.w, msg->pose.orientation.x,
                                                            msg->pose.orientation.y, msg->pose.orientation.z};
             setGoalPosiAndYaw(goal_p, goal_q);
+        }
+
+        void maneuverCallback(const traj_manager::msg::ManeuverReference::SharedPtr msg) {
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            if (msg->header.frame_id != "world" || msg->points.size() < 2 ||
+                msg->points.size() > 64 ||
+                (nh_->now() - rclcpp::Time(msg->header.stamp)).seconds() > 0.5 ||
+                (nh_->now() - rclcpp::Time(msg->header.stamp)).seconds() < -0.1) {
+                return;
+            }
+            super_utils::vec_Vec3f points;
+            points.reserve(msg->points.size());
+            for (const auto &point : msg->points) {
+                points.emplace_back(point.x, point.y, point.z);
+            }
+            const Vec3f tangent(msg->terminal_tangent.x,
+                                msg->terminal_tangent.y,
+                                msg->terminal_tangent.z);
+            if (!planner_ptr_->setManeuverReference(
+                    points, tangent, msg->desired_speed, msg->max_deviation)) {
+                RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
+                                     "Rejected invalid maneuver reference");
+                return;
+            }
+            setManeuverGoal(points.back());
+            last_maneuver_reference_s_ = nh_->now().seconds();
+        }
+
+        void stopManeuverReference() {
+            if (!planner_ptr_ || !planner_ptr_->maneuverReferenceActive()) return;
+            planner_ptr_->clearManeuverReference();
+            last_maneuver_reference_s_ = -1.0;
+            gi_.new_goal = false;
+            finish_plan = true;
+            ChangeState("ManeuverReferenceStopped", WAIT_GOAL);
+        }
+
+        void expireManeuverReference() {
+            if (last_maneuver_reference_s_ >= 0.0 &&
+                nh_->now().seconds() - last_maneuver_reference_s_ > 0.5) {
+                RCLCPP_WARN(nh_->get_logger(), "Maneuver reference expired; waiting for a new reference");
+                stopManeuverReference();
+            }
+        }
+
+        void referenceOwnerCallback(const std_msgs::msg::String::SharedPtr msg) {
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            if (msg->data.rfind("GLOBAL", 0) == 0) stopManeuverReference();
         }
 
         /// Clear ROG local map (phantom occupancy / stale free space) and
@@ -426,6 +495,12 @@ namespace fsm {
                         qos,
                         std::bind(&FsmRos2::goalCallback, this, std::placeholders::_1),
                         so);
+                maneuver_sub_ = nh_->create_subscription<traj_manager::msg::ManeuverReference>(
+                        "/planning/maneuver_reference", rclcpp::QoS(1).best_effort(),
+                        std::bind(&FsmRos2::maneuverCallback, this, std::placeholders::_1), so);
+                reference_owner_sub_ = nh_->create_subscription<std_msgs::msg::String>(
+                        "/planning/reference_owner", rclcpp::QoS(1).reliable().transient_local(),
+                        std::bind(&FsmRos2::referenceOwnerCallback, this, std::placeholders::_1), so);
                 cout << YELLOW << " -- [Fsm] CLICKGOAL ENABLE." << RESET << endl;
                 cmd_cnt++;
             }
@@ -482,8 +557,7 @@ namespace fsm {
         uint64_t replan_id_{0};
 
         void pubCmdTimerCallback() {
-            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
-            if (autonomy_managed_) guard.lock();
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             if (stop) {
                 return;
             }
@@ -510,14 +584,14 @@ namespace fsm {
         }
 
         void replanTimerCallback() {
-            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
-            if (autonomy_managed_) guard.lock();
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            expireManeuverReference();
             callReplanOnce();
         }
 
         void mainFsmTimerCallback() {
-            std::unique_lock<std::recursive_mutex> guard(autonomy_mutex_, std::defer_lock);
-            if (autonomy_managed_) guard.lock();
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            expireManeuverReference();
             callMainFsmOnce();
         }
 

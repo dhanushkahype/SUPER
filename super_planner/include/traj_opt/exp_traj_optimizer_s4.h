@@ -96,6 +96,9 @@ namespace traj_opt {
             StatePVAJ tailPVAJ;
             vec_E<Vec3f> guide_path;
             vector<double> guide_t;
+            vec_Vec3f maneuver_path;
+            double maneuver_max_deviation{0.0};
+            double maneuver_speed_limit{0.0};
 
             int temporalDim, spatialDim;
 
@@ -116,6 +119,7 @@ namespace traj_opt {
                                           const int &integralResolution,
                                           const VecDf &magnitudeBounds,
                                           const VecDf &penaltyWeights,
+                                          const vec_Vec3f &maneuver_path,
                                           flatness::FlatnessMap &flatMap,
                                           double &cost,
                                           VecDf &gradT,
@@ -326,6 +330,15 @@ namespace traj_opt {
         ExpTrajOpt(const traj_opt::Config &cfg, const ros_interface::RosInterface::Ptr & ros_ptr);
 
         ~ExpTrajOpt();
+
+        void setManeuverReference(const vec_Vec3f &path,
+                                  double max_deviation, double desired_speed) {
+            opt_vars.maneuver_path = path;
+            opt_vars.maneuver_max_deviation = max_deviation;
+            opt_vars.maneuver_speed_limit = path.empty() ? 0.0 : desired_speed;
+            opt_vars.magnitudeBounds[0] = path.empty()
+                ? cfg_.max_vel : std::min(cfg_.max_vel, desired_speed);
+        }
 
         bool optimize(const StatePVAJ &headPVAJ, const StatePVAJ &tailPVAJ,
                       PolytopeVec &sfcs,

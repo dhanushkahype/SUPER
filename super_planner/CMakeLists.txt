@@ -38,6 +38,7 @@ include_directories(
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(operator_msgs REQUIRED)
+find_package(traj_manager REQUIRED)
 find_package(rog_map REQUIRED)
 find_package(mars_quadrotor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -67,6 +68,7 @@ set(third_party_libs
 set(ros_libs
         rclcpp
         operator_msgs
+        traj_manager
         std_msgs
         std_srvs
         mars_quadrotor_msgs

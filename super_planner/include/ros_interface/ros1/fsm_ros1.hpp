@@ -47,16 +47,27 @@ namespace fsm {
         rog_map::ROGMapROS::Ptr map_ptr_;
         quadrotor_msgs::PositionCommand latest_cmd;
         nav_msgs::Path path;
+        ros::Time next_path_pub_time_;
 
         vector<quadrotor_msgs::PositionCommand> cmd_logs_;
 
         void resetVisualizedPath() override {
             path.poses.clear();
+            next_path_pub_time_ = ros::Time(0);
         }
 
         void publishCurPoseToPath() override {
+            if (cfg_.visualization_path_max_poses <= 0 ||
+                cfg_.visualization_path_rate <= 0.0) {
+                return;
+            }
+
+            const ros::Time now = ros::Time::now();
+            if (!next_path_pub_time_.isZero() && now < next_path_pub_time_) return;
+            next_path_pub_time_ = now + ros::Duration(1.0 / cfg_.visualization_path_rate);
+
             path.header.frame_id = "world";
-            path.header.stamp = ros::Time::now();
+            path.header.stamp = now;
             geometry_msgs::PoseStamped pose;
             pose.header = path.header;
             pose.pose.position.x = robot_state_.p(0);
@@ -66,6 +77,10 @@ namespace fsm {
             pose.pose.orientation.y = robot_state_.q.y();
             pose.pose.orientation.z = robot_state_.q.z();
             pose.pose.orientation.w = robot_state_.q.w();
+            const auto max_poses = static_cast<size_t>(cfg_.visualization_path_max_poses);
+            if (path.poses.size() >= max_poses) {
+                path.poses.erase(path.poses.begin());
+            }
             path.poses.push_back(pose);
             path_pub_.publish(path);
         }

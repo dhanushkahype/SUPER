@@ -27,6 +27,8 @@ using std::isnan;
 #include <memory>
 #include <super_utils/scope_timer.hpp>
 #include <fmt/color.h>
+#include <limits>
+#include <utils/geometry/maneuver_reference.hpp>
 
 using namespace super_utils;
 
@@ -67,6 +69,102 @@ namespace super_planner {
 
         const int neighbor_step = floor(cfg_.robot_r / cfg_.resolution);
         astar_ptr_->setFineInfNeighbors(neighbor_step);
+    }
+
+    bool SuperPlanner::setManeuverReference(const vec_Vec3f &points,
+                                            const Vec3f &terminal_tangent,
+                                            double desired_speed,
+                                            double max_deviation) {
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        if (points.size() < 2 || points.size() > 64 ||
+            !std::isfinite(desired_speed) || desired_speed <= 0.0 ||
+            !std::isfinite(max_deviation) || max_deviation <= 0.0 ||
+            !terminal_tangent.allFinite() || terminal_tangent.norm() < 0.5) {
+            return false;
+        }
+        for (const auto &point : points) {
+            if (!point.allFinite()) return false;
+        }
+        maneuver_reference_.points = points;
+        maneuver_reference_.terminal_tangent = terminal_tangent.normalized();
+        maneuver_reference_.desired_speed = std::min(desired_speed, cfg_.exp_traj_cfg.max_vel);
+        maneuver_reference_.max_deviation = max_deviation;
+        maneuver_reference_active_ = true;
+        return true;
+    }
+
+    void SuperPlanner::clearManeuverReference() {
+        std::lock_guard<std::mutex> guard(replan_lock_);
+        maneuver_reference_active_ = false;
+        maneuver_reference_.points.clear();
+    }
+
+    bool SuperPlanner::appendManeuverGuide(vec_Vec3f &guide_path,
+                                            vector<double> &guide_stamp,
+                                            double remaining_horizon) {
+        const auto &reference = maneuver_reference_.points;
+        if (reference.size() < 2) return false;
+        if ((guide_path.back() - reference.back()).norm() < cfg_.resolution * 2) {
+            return true;
+        }
+        if (remaining_horizon <= 0.0) return false;
+
+        size_t nearest_index = 0;
+        double nearest_distance = std::numeric_limits<double>::infinity();
+        for (size_t i = 0; i < reference.size(); ++i) {
+            const double distance = (guide_path.back() - reference[i]).squaredNorm();
+            if (distance < nearest_distance) {
+                nearest_distance = distance;
+                nearest_index = i;
+            }
+        }
+
+        double added_length = 0.0;
+        for (size_t i = nearest_index + 1; i < reference.size(); ++i) {
+            const Vec3f target = reference[i];
+            vec_Vec3f segment;
+            // Unknown inflation is optional in ROG-Map. Checking known-free
+            // through the inflated map calls isUnknownInflate() and throws when
+            // px4_dense disables it. Check inflated occupancy and raw known
+            // space separately, then let corridor generation enforce robot_r.
+            const bool inflated_clear = map_ptr_->isLineFree(
+                guide_path.back(), target, true, false);
+            const bool known_clear = !cfg_.frontend_in_known_free ||
+                map_ptr_->isLineFree(guide_path.back(), target, false, true);
+            if (inflated_clear && known_clear) {
+                segment.push_back(guide_path.back());
+                segment.push_back(target);
+            } else if (!PathSearch(guide_path.back(), target,
+                                    remaining_horizon - added_length, segment) ||
+                       segment.empty() ||
+                       (segment.back() - target).norm() > cfg_.resolution * 2) {
+                ros_ptr_->warn(" -- [SUPER] No path to maneuver sample");
+                return false;
+            }
+
+            for (size_t j = 1; j < segment.size(); ++j) {
+                const Vec3f edge = segment[j] - guide_path.back();
+                const int checks = std::max(1, static_cast<int>(std::ceil(
+                    edge.norm() / std::max(0.05, cfg_.resolution * 0.5))));
+                for (int k = 1; k <= checks; ++k) {
+                    const Vec3f sample = guide_path.back() + edge * (double(k) / checks);
+                    if ((sample - nearestManeuverPoint(sample, reference)).norm() >
+                        maneuver_reference_.max_deviation) {
+                        ros_ptr_->warn(" -- [SUPER] Maneuver detour exceeds deviation limit");
+                        return false;
+                    }
+                }
+                const double step = (segment[j] - guide_path.back()).norm();
+                if (step < 1e-3) continue;
+                added_length += step;
+                if (added_length > remaining_horizon) return false;
+                guide_stamp.push_back(guide_stamp.back() +
+                    step / maneuver_reference_.desired_speed);
+                guide_path.push_back(segment[j]);
+            }
+        }
+        return guide_path.size() >= 2 &&
+               (guide_path.back() - reference.back()).norm() < cfg_.resolution * 2;
     }
 
     RET_CODE
@@ -611,7 +709,12 @@ namespace super_planner {
         }
 
         // if need a geometry path
-        if (temp_horizon > cfg_.resolution * 2) {
+        if (maneuver_reference_active_) {
+            if (!appendManeuverGuide(guide_path, guide_stamp, temp_horizon)) {
+                ros_ptr_->warn(" -- [SUPER] Maneuver guide cannot reach its local endpoint");
+                return FAILED;
+            }
+        } else if (temp_horizon > cfg_.resolution * 2) {
             /// start point TT + exp_traj start_WT
 //            double path_search_start_point_WT = guide_stamp.back() + guide_pos_traj.start_WT;
             // if the goal is close to the last point of the guide path, just add the goal to the guide path
@@ -736,7 +839,10 @@ namespace super_planner {
         pos_fina_state.col(0) = guide_path.back();
         {
             const double dist_to_goal = (gi_.goal_p - robot_state_.p).norm();
-            if (cfg_.continuous_following && dist_to_goal > cfg_.goal_stop_dis) {
+            if (maneuver_reference_active_) {
+                pos_fina_state.col(1) = maneuver_reference_.terminal_tangent *
+                    maneuver_reference_.desired_speed;
+            } else if (cfg_.continuous_following && dist_to_goal > cfg_.goal_stop_dis) {
                 // Orbit / moving-carrot: keep non-zero terminal velocity so the
                 // drone doesn't decelerate at every intermediate carrot.
                 const Vec3f dir = gi_.goal_p - robot_state_.p;
@@ -767,6 +873,10 @@ namespace super_planner {
         Trajectory out_traj;
         TimeConsuming t_exp_opt("t_exp_opt", false);
         auto original_sfc = sfc;
+        exp_traj_opt_->setManeuverReference(
+            maneuver_reference_active_ ? maneuver_reference_.points : vec_Vec3f{},
+            maneuver_reference_active_ ? maneuver_reference_.max_deviation : 0.0,
+            maneuver_reference_active_ ? maneuver_reference_.desired_speed : cfg_.exp_traj_cfg.max_vel);
         temp_ret = exp_traj_opt_->optimize(pos_init_state,
                                            pos_fina_state,
                                            guide_path,

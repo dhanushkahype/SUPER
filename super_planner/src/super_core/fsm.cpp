@@ -74,7 +74,9 @@ namespace fsm {
             return;
         }
 
-        planner_ptr_->getMap()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
+        if (!planner_ptr_->maneuverReferenceActive()) {
+            planner_ptr_->getMap()->getNearestInfCellNot(GridType::OCCUPIED, gi_.goal_p, gi_.goal_p, 3.0);
+        }
 
         TimeConsuming replan_once_time("replan_once_time", false);
 
@@ -238,6 +240,10 @@ namespace fsm {
         plan_fail_streak_++;
         cout << YELLOW << " -- [Fsm] " << context << " fail streak="
              << plan_fail_streak_ << RESET << endl;
+
+        // A blocked maneuver has a fixed geometric bound. Do not move its
+        // endpoint, permit unknown space, or reset the obstacle map to force it.
+        if (planner_ptr_->maneuverReferenceActive()) return;
 
         // Level 1: re-snap goal into free space with a larger search radius
         // (phantom occupancy / mover trails often sit on the requested goal).

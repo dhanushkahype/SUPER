@@ -139,4 +139,12 @@ install(DIRECTORY
 )
 
 
+if(BUILD_TESTING)
+    find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_goal_refresh test/test_goal_refresh.cpp)
+    ament_add_gtest(test_maneuver_plan_watchdog test/test_maneuver_plan_watchdog.cpp)
+    ament_add_gtest(test_ordered_orbit_detour test/test_ordered_orbit_detour.cpp)
+    ament_add_gtest(test_committed_plan_provenance test/test_committed_plan_provenance.cpp)
+endif()
+
 ament_package()

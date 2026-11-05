@@ -1,4 +1,5 @@
 #include <cmath>
+#include "utils/geometry/goal_refresh.hpp"
 using std::isnan;
 /**
 * This file is part of SUPER
@@ -84,6 +85,7 @@ namespace fsm {
         if (ret_code == FAILED) {
             onPlanFailure("ReplanOnce");
         } else if (ret_code == SUCCESS || ret_code == FINISH) {
+            captureCommittedPlanProvenance();
             onPlanSuccess();
             cout << GREEN << " -- [Fsm] ReplanOnce succeed." << RESET << endl;
         }
@@ -170,13 +172,16 @@ namespace fsm {
                          << RESET << endl;
                     return;
                 }
-                int retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
+                TimeConsuming plan_from_rest_time("plan_from_rest_time", false);
+                RET_CODE retcode = planner_ptr_->PlanFromRest(gi_.goal_p, gi_.goal_yaw, gi_.new_goal);
                 if (!planner_ptr_->goalValid()) {
                     cout << YELLOW << " -- [Fsm] Goal is invalid, skip this goal." << RESET << endl;
                     ChangeState("MainFsmCallback", WAIT_GOAL);
+                    publishTrajectoryPlanStatus(retcode, plan_from_rest_time.stop(), false);
                     return;
                 }
                 if (retcode == SUCCESS || retcode == FINISH) {
+                    captureCommittedPlanProvenance();
                     onPlanSuccess();
                     gi_.new_goal = false;
                     plan_from_rest_ = true;
@@ -192,6 +197,12 @@ namespace fsm {
                     cout << YELLOW << " -- [Fsm] PlanFromRest failed, try replan." << RESET << endl;
                     onPlanFailure("PlanFromRest");
                 }
+                // Initial acquisition failures need the same status/watchdog
+                // budget as in-flight replans. Otherwise no committed plan is
+                // reported until FOLLOW_TRAJ and an initial orbit can retry
+                // indefinitely while its reference producer stays healthy.
+                publishTrajectoryPlanStatus(retcode, plan_from_rest_time.stop(),
+                                            retcode == SUCCESS || retcode == FINISH);
                 replan_logs_.push_back(planner_ptr_->getLatestReplanLog());
                 break;
             }
@@ -327,7 +338,18 @@ namespace fsm {
             click_point.z() = cfg_.click_height;
         }
 
-        if (planner_ptr_->getMap()->getNearestInfCellNot(GridType::OCCUPIED, click_point, gi_.goal_p, 3.0)) {
+        Vec3f resolved_goal;
+        if (planner_ptr_->getMap()->getNearestInfCellNot(GridType::OCCUPIED, click_point, resolved_goal, 3.0)) {
+            // Resolve into a temporary: a refused/duplicate goal must not mutate
+            // the current approach before admission has completed.
+            double requested_yaw = NAN;
+            if (cfg_.click_yaw_en && std::isfinite(q.w()) && std::isfinite(q.x()) &&
+                std::isfinite(q.y()) && std::isfinite(q.z()))
+                requested_yaw = geometry_utils::get_yaw_from_quaternion(q);
+            const bool approaching = machine_state_ == FOLLOW_TRAJ || machine_state_ == GENERATE_TRAJ;
+            if (started_ && super_utils::isGoalRefresh((resolved_goal - gi_.goal_p).norm(),
+                  gi_.goal_yaw, requested_yaw, approaching, arrivedAtGoal())) return;
+            gi_.goal_p = resolved_goal;
             cout << GREEN << " -- [Fsm] Get goal at " << RESET << gi_.goal_p.transpose() << endl;
         } else {
             fmt::print(fg(fmt::color::indian_red), "Goal is deeply occupied, skip this goal.\n");

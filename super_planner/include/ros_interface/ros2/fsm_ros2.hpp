@@ -41,6 +41,9 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "traj_manager/msg/maneuver_reference.hpp"
+#include "utils/geometry/maneuver_plan_watchdog.hpp"
+#include "utils/geometry/committed_plan_provenance.hpp"
+#include "utils/geometry/reference_goal_gate.hpp"
 #include <mutex>
 
 
@@ -49,6 +52,16 @@ namespace fsm {
 
         bool autonomy_managed_{false};
         double last_maneuver_reference_s_{-1.0};
+        super_planner::ManeuverPlanWatchdog maneuver_plan_watchdog_;
+        std::string maneuver_session_;
+        std::string reference_owner_token_{"GLOBAL session= generation=0"};
+        std::string planning_source_token_;
+        int64_t planning_created_ns_{0};
+        super_planner::CommittedPlanProvenance committed_provenance_;
+        super_planner::ReferenceGoalGate reference_goal_gate_;
+        uint64_t maneuver_generation_{0};
+        bool maneuver_blocked_{false};
+        rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr maneuver_pause_client_;
         std::recursive_mutex autonomy_mutex_;
         int64_t goal_cutoff_ns_{0};
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_execution_srv_;
@@ -58,6 +71,7 @@ namespace fsm {
         rclcpp::Publisher<operator_msgs::msg::TrajectoryPlanStatus>::SharedPtr trajectory_status_pub_;
         rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
         rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
+        rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr global_request_sub_, frontier_request_sub_;
         rclcpp::Subscription<traj_manager::msg::ManeuverReference>::SharedPtr maneuver_sub_;
         rclcpp::Subscription<std_msgs::msg::String>::SharedPtr reference_owner_sub_;
         rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_rog_map_srv_;
@@ -108,6 +122,18 @@ namespace fsm {
             path_pub_->publish(path);
         }
 
+        void beginPlanningAttempt() {
+            planning_created_ns_ = nh_->now().nanoseconds();
+            planning_source_token_ = reference_owner_token_;
+        }
+
+        void captureCommittedPlanProvenance() override {
+            planner_ptr_->lockCommittedTraj();
+            const double start = planner_ptr_->getCommittedPositionTrajectory().start_WT;
+            planner_ptr_->unlockCommittedTraj();
+            committed_provenance_.capture(start, planning_source_token_, planning_created_ns_);
+        }
+
         void publishPolyTraj() override {
             mars_quadrotor_msgs::msg::PolynomialTrajectory cmd_traj;
             getCommittedTrajectory(cmd_traj);
@@ -137,6 +163,17 @@ namespace fsm {
                 for (const auto duration : trajectory.time_pos) status.duration_s += duration;
             }
             trajectory_status_pub_->publish(status);
+            if (planner_ptr_->maneuverReferenceActive() && !maneuver_blocked_ &&
+                maneuver_plan_watchdog_.observe(committed, nh_->now().seconds())) {
+                maneuver_blocked_ = true;
+                RCLCPP_ERROR(nh_->get_logger(),
+                    "Maneuver blocked: no committed plan for 0.5 s; requesting measured-position hold. Explicit resume required.");
+                if (maneuver_pause_client_->service_is_ready()) {
+                    maneuver_pause_client_->async_send_request(
+                        std::make_shared<std_srvs::srv::Trigger::Request>());
+                }
+                stopManeuverReference();
+            }
         }
 
         void getOneHeartBeatMsg(mars_quadrotor_msgs::msg::PolynomialTrajectory &heartbeat, bool &traj_finish) {
@@ -149,7 +186,6 @@ namespace fsm {
         }
 
         void getCommittedTrajectory(mars_quadrotor_msgs::msg::PolynomialTrajectory &cmd_traj) {
-            ros_ptr_->getSimTime(cmd_traj.header.stamp.sec, cmd_traj.header.stamp.nanosec);
             cmd_traj.header.frame_id = "world";
             cmd_traj.type = mars_quadrotor_msgs::msg::PolynomialTrajectory::POSITION_TRAJ |
                             mars_quadrotor_msgs::msg::PolynomialTrajectory::HEART_BEAT;
@@ -159,6 +195,11 @@ namespace fsm {
             planner_ptr_->unlockCommittedTraj();
 
             cmd_traj.start_wt_pos = pos_traj.start_WT;
+            if (committed_provenance_.matches(pos_traj.start_WT)) {
+                cmd_traj.header.stamp = rclcpp::Time(committed_provenance_.created_ns(),
+                                                    nh_->get_clock()->get_clock_type());
+                cmd_traj.debug_info = committed_provenance_.source();
+            }
 
             cmd_traj.piece_num_pos = pos_traj.getPieceNum();
             cmd_traj.order_pos = 7;
@@ -352,6 +393,8 @@ namespace fsm {
         void goalCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             if (autonomy_managed_ && rclcpp::Time(msg->header.stamp).nanoseconds() < goal_cutoff_ns_) return;
+            if (!autonomy_managed_ && !reference_goal_gate_.acceptsGlobalCarrot(
+                    rclcpp::Time(msg->header.stamp).nanoseconds())) return;
             planner_ptr_->clearManeuverReference();
             last_maneuver_reference_s_ = -1.0;
             super_utils::Vec3f goal_p = Vec3f{msg->pose.position.x, msg->pose.position.y, msg->pose.position.z};
@@ -362,6 +405,12 @@ namespace fsm {
 
         void maneuverCallback(const traj_manager::msg::ManeuverReference::SharedPtr msg) {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            const std::string source = "ORBIT session="+msg->session_id+
+                " generation="+std::to_string(msg->generation);
+            if (reference_owner_token_ != source && reference_owner_token_.rfind(source+" ", 0) != 0) return;
+            if (msg->session_id == maneuver_session_ &&
+                (msg->generation < maneuver_generation_ ||
+                 (msg->generation == maneuver_generation_ && maneuver_blocked_))) return;
             if (msg->header.frame_id != "world" || msg->points.size() < 2 ||
                 msg->points.size() > 64 ||
                 (nh_->now() - rclcpp::Time(msg->header.stamp)).seconds() > 0.5 ||
@@ -377,10 +426,16 @@ namespace fsm {
                                 msg->terminal_tangent.y,
                                 msg->terminal_tangent.z);
             if (!planner_ptr_->setManeuverReference(
-                    points, tangent, msg->desired_speed, msg->max_deviation)) {
+                    points, tangent, msg->desired_speed, msg->max_deviation, msg->terminal_stop)) {
                 RCLCPP_WARN_THROTTLE(nh_->get_logger(), *nh_->get_clock(), 1000,
                                      "Rejected invalid maneuver reference");
                 return;
+            }
+            if (msg->session_id != maneuver_session_ || msg->generation != maneuver_generation_) {
+                maneuver_blocked_ = false;
+                maneuver_plan_watchdog_.reset();
+                maneuver_session_ = msg->session_id;
+                maneuver_generation_ = msg->generation;
             }
             setManeuverGoal(points.back());
             last_maneuver_reference_s_ = nh_->now().seconds();
@@ -398,14 +453,30 @@ namespace fsm {
         void expireManeuverReference() {
             if (last_maneuver_reference_s_ >= 0.0 &&
                 nh_->now().seconds() - last_maneuver_reference_s_ > 0.5) {
-                RCLCPP_WARN(nh_->get_logger(), "Maneuver reference expired; waiting for a new reference");
+                maneuver_blocked_ = true;
+                RCLCPP_WARN(nh_->get_logger(), "Maneuver reference expired; explicit resume required");
                 stopManeuverReference();
             }
         }
 
         void referenceOwnerCallback(const std_msgs::msg::String::SharedPtr msg) {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
-            if (msg->data.rfind("GLOBAL", 0) == 0) stopManeuverReference();
+            if (!reference_goal_gate_.observeOwner(msg->data, nh_->now().nanoseconds())) return;
+            reference_owner_token_ = msg->data;
+            stopManeuverReference();
+            gi_.new_goal = false;
+            finish_plan = true;
+            ChangeState("ReferenceOwnerChanged", WAIT_GOAL);
+        }
+
+        void globalRequestCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
+            std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            const auto stamp = rclcpp::Time(msg->header.stamp, nh_->get_clock()->get_clock_type());
+            if (msg->header.frame_id != "world" ||
+                !std::isfinite(msg->pose.position.x) || !std::isfinite(msg->pose.position.y) ||
+                !std::isfinite(msg->pose.position.z) ||
+                (nh_->now()-stamp).seconds() < -0.1 || (nh_->now()-stamp).seconds() > 1.0) return;
+            reference_goal_gate_.observeGlobalGoal(stamp.nanoseconds());
         }
 
         /// Clear ROG local map (phantom occupancy / stale free space) and
@@ -468,6 +539,7 @@ namespace fsm {
                                                                                                  qos);
             trajectory_status_pub_ = nh_->create_publisher<operator_msgs::msg::TrajectoryPlanStatus>(
                     "/super/trajectory_plan_status", rclcpp::QoS(10).reliable());
+            maneuver_pause_client_ = nh_->create_client<std_srvs::srv::Trigger>("/traj_manager/pause");
             path_pub_ = nh_->create_publisher<nav_msgs::msg::Path>("fsm/path", qos);
 
             // Operator / reset_after_crash.sh: wipe ROG sliding map without
@@ -495,6 +567,12 @@ namespace fsm {
                         qos,
                         std::bind(&FsmRos2::goalCallback, this, std::placeholders::_1),
                         so);
+                global_request_sub_ = nh_->create_subscription<geometry_msgs::msg::PoseStamped>(
+                        "/global_goal", rclcpp::QoS(5).reliable(),
+                        std::bind(&FsmRos2::globalRequestCallback, this, std::placeholders::_1), so);
+                frontier_request_sub_ = nh_->create_subscription<geometry_msgs::msg::PoseStamped>(
+                        "/exploration/frontier_goal", rclcpp::QoS(5).reliable(),
+                        std::bind(&FsmRos2::globalRequestCallback, this, std::placeholders::_1), so);
                 maneuver_sub_ = nh_->create_subscription<traj_manager::msg::ManeuverReference>(
                         "/planning/maneuver_reference", rclcpp::QoS(1).best_effort(),
                         std::bind(&FsmRos2::maneuverCallback, this, std::placeholders::_1), so);
@@ -586,12 +664,14 @@ namespace fsm {
         void replanTimerCallback() {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             expireManeuverReference();
+            beginPlanningAttempt();
             callReplanOnce();
         }
 
         void mainFsmTimerCallback() {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             expireManeuverReference();
+            beginPlanningAttempt();
             callMainFsmOnce();
         }
 

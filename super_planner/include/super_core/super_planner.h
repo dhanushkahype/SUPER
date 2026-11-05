@@ -61,6 +61,7 @@ namespace super_planner {
         super_planner::Config cfg_;
         rog_map::ROGMapROS::Ptr map_ptr_;
         CorridorGenerator::Ptr cg_ptr_;
+        CorridorGenerator::Ptr maneuver_cg_ptr_;
         path_search::Astar::Ptr astar_ptr_;
         ros_interface::RosInterface::Ptr ros_ptr_;
         Vec3f shifted_sfc_start_pt_;
@@ -96,6 +97,7 @@ namespace super_planner {
             Vec3f terminal_tangent{0, 0, 0};
             double desired_speed{0.0};
             double max_deviation{0.0};
+            bool terminal_stop{false};
         } maneuver_reference_;
 
         bool maneuver_reference_active_{false};
@@ -130,7 +132,8 @@ namespace super_planner {
 
         bool setManeuverReference(const vec_Vec3f &points,
                                   const Vec3f &terminal_tangent,
-                                  double desired_speed, double max_deviation);
+                                  double desired_speed, double max_deviation,
+                                  bool terminal_stop = false);
 
         void clearManeuverReference();
 
@@ -146,6 +149,7 @@ namespace super_planner {
             // corridor_avoid_unknown gates the CIRI half independently, so a
             // relax can only ever loosen the corridor, never tighten it.
             cg_ptr_->setAvoidUnknown(enable && cfg_.corridor_avoid_unknown);
+            maneuver_cg_ptr_->setAvoidUnknown(enable && cfg_.corridor_avoid_unknown);
         }
 
         bool frontendInKnownFree() const {

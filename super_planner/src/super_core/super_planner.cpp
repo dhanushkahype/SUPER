@@ -29,10 +29,55 @@ using std::isnan;
 #include <fmt/color.h>
 #include <limits>
 #include <utils/geometry/maneuver_reference.hpp>
+#include <utils/geometry/ordered_orbit_detour.hpp>
+#include <pcl/kdtree/kdtree_flann.h>
 
 using namespace super_utils;
 
 namespace super_planner {
+    namespace {
+        // Raw-brake proximity is centre-based: 0.65 m + half a 0.15 m
+        // voxel diagonal (~0.13 m), plus tracking slack. min_gap telemetry
+        // subtracts robot radius, but the proximity threshold does not.
+        // This is maneuver-only; ordinary global navigation keeps robot_r.
+        constexpr double orbit_clearance_floor = 0.85;
+        constexpr double orbit_edge_step = 0.05;
+
+        std::function<bool(const Vec3f &)> orbitMapClearance(
+            const rog_map::ROGMapROS::Ptr &map, const vec_Vec3f &reference,
+            double deviation, double clearance, bool require_known) {
+            Vec3f lower = reference.front(), upper = reference.front();
+            for (const auto &point : reference) {
+                lower = lower.cwiseMin(point);
+                upper = upper.cwiseMax(point);
+            }
+            // Occupancy points are voxel centres. Account for the entire voxel
+            // and half an edge sample interval, so point queries certify edges.
+            const double conservative_radius = clearance +
+                std::sqrt(3.0)*map->getResolution()*0.5 + orbit_edge_step*0.5;
+            const Vec3f margin = Vec3f::Constant(deviation + conservative_radius);
+            vec_Vec3f obstacles;
+            map->boxSearch(lower-margin, upper+margin, OCCUPIED, obstacles);
+            auto cloud = pcl::PointCloud<pcl::PointXYZ>::Ptr(new pcl::PointCloud<pcl::PointXYZ>());
+            cloud->reserve(obstacles.size());
+            for (const auto &point : obstacles) {
+                cloud->push_back(pcl::PointXYZ(point.x(), point.y(), point.z()));
+            }
+            auto tree = std::make_shared<pcl::KdTreeFLANN<pcl::PointXYZ>>();
+            if (!cloud->empty()) tree->setInputCloud(cloud);
+            return [map, cloud, tree, require_known, conservative_radius](const Vec3f &point) {
+                if (!point.allFinite() || map->isOccupied(point) ||
+                    (require_known && !map->isKnownFree(point))) return false;
+                if (cloud->empty()) return true;
+                std::vector<int> index(1);
+                std::vector<float> distance(1);
+                if (tree->nearestKSearch(pcl::PointXYZ(point.x(), point.y(), point.z()),
+                                        1, index, distance) != 1) return false;
+                return distance[0] > conservative_radius*conservative_radius;
+            };
+        }
+    }
+
     SuperPlanner::SuperPlanner
             (const std::string &cfg_path,
              const ros_interface::RosInterface::Ptr &ros_ptr,
@@ -56,6 +101,16 @@ namespace super_planner {
                                                       cfg_.frontend_in_known_free &&
                                                       cfg_.corridor_avoid_unknown);
         cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
+        const double maneuver_radius =
+            std::max({cfg_.robot_r, orbit_clearance_floor, cfg_.maneuver_clearance}) +
+            std::sqrt(3.0)*map_ptr_->getResolution()*0.5 + orbit_edge_step*0.5;
+        maneuver_cg_ptr_ = std::make_shared<CorridorGenerator>(
+            ros_ptr_, map_ptr_, maneuverCorridorBound(cfg_.corridor_bound_dis, maneuver_radius),
+            cfg_.corridor_line_max_length,
+            cfg_.resolution, rog_map_cfg.virtual_ground_height, rog_map_cfg.virtual_ceil_height,
+            maneuver_radius, cfg_.obs_skip_num, cfg_.iris_iter_num,
+            cfg_.frontend_in_known_free && cfg_.corridor_avoid_unknown);
+        maneuver_cg_ptr_->SetLineNeighborList(cfg_.seed_line_neighbour);
 
 
         time_consuming_.resize(8);
@@ -74,7 +129,8 @@ namespace super_planner {
     bool SuperPlanner::setManeuverReference(const vec_Vec3f &points,
                                             const Vec3f &terminal_tangent,
                                             double desired_speed,
-                                            double max_deviation) {
+                                            double max_deviation,
+                                            bool terminal_stop) {
         std::lock_guard<std::mutex> guard(replan_lock_);
         if (points.size() < 2 || points.size() > 64 ||
             !std::isfinite(desired_speed) || desired_speed <= 0.0 ||
@@ -89,6 +145,7 @@ namespace super_planner {
         maneuver_reference_.terminal_tangent = terminal_tangent.normalized();
         maneuver_reference_.desired_speed = std::min(desired_speed, cfg_.exp_traj_cfg.max_vel);
         maneuver_reference_.max_deviation = max_deviation;
+        maneuver_reference_.terminal_stop = terminal_stop;
         maneuver_reference_active_ = true;
         return true;
     }
@@ -119,52 +176,28 @@ namespace super_planner {
             }
         }
 
-        double added_length = 0.0;
-        for (size_t i = nearest_index + 1; i < reference.size(); ++i) {
-            const Vec3f target = reference[i];
-            vec_Vec3f segment;
-            // Unknown inflation is optional in ROG-Map. Checking known-free
-            // through the inflated map calls isUnknownInflate() and throws when
-            // px4_dense disables it. Check inflated occupancy and raw known
-            // space separately, then let corridor generation enforce robot_r.
-            const bool inflated_clear = map_ptr_->isLineFree(
-                guide_path.back(), target, true, false);
-            const bool known_clear = !cfg_.frontend_in_known_free ||
-                map_ptr_->isLineFree(guide_path.back(), target, false, true);
-            if (inflated_clear && known_clear) {
-                segment.push_back(guide_path.back());
-                segment.push_back(target);
-            } else if (!PathSearch(guide_path.back(), target,
-                                    remaining_horizon - added_length, segment) ||
-                       segment.empty() ||
-                       (segment.back() - target).norm() > cfg_.resolution * 2) {
-                ros_ptr_->warn(" -- [SUPER] No path to maneuver sample");
-                return false;
-            }
-
-            for (size_t j = 1; j < segment.size(); ++j) {
-                const Vec3f edge = segment[j] - guide_path.back();
-                const int checks = std::max(1, static_cast<int>(std::ceil(
-                    edge.norm() / std::max(0.05, cfg_.resolution * 0.5))));
-                for (int k = 1; k <= checks; ++k) {
-                    const Vec3f sample = guide_path.back() + edge * (double(k) / checks);
-                    if ((sample - nearestManeuverPoint(sample, reference)).norm() >
-                        maneuver_reference_.max_deviation) {
-                        ros_ptr_->warn(" -- [SUPER] Maneuver detour exceeds deviation limit");
-                        return false;
-                    }
-                }
-                const double step = (segment[j] - guide_path.back()).norm();
-                if (step < 1e-3) continue;
-                added_length += step;
-                if (added_length > remaining_horizon) return false;
-                guide_stamp.push_back(guide_stamp.back() +
-                    step / maneuver_reference_.desired_speed);
-                guide_path.push_back(segment[j]);
-            }
+        if (nearest_index+1 >= reference.size()) return guide_path.size() >= 2;
+        const auto clear = orbitMapClearance(map_ptr_, reference,
+            maneuver_reference_.max_deviation, std::max({cfg_.robot_r, orbit_clearance_floor, cfg_.maneuver_clearance}),
+            cfg_.frontend_in_known_free);
+        const OrbitPoints stations(reference.begin(), reference.end());
+        OrbitPoints route;
+        if (!orderedOrbitDetour(guide_path.back(), stations, nearest_index+1,
+                maneuver_reference_.max_deviation, std::min(0.05, cfg_.resolution), orbit_edge_step, clear, route)) {
+            ros_ptr_->warn(" -- [SUPER] No ordered clearance-preserving route inside maneuver tube");
+            return false;
         }
-        return guide_path.size() >= 2 &&
-               (guide_path.back() - reference.back()).norm() < cfg_.resolution * 2;
+        double added_length = 0.0;
+        for (size_t i = 1; i < route.size(); ++i) {
+            const double step = (route[i]-guide_path.back()).norm();
+            if (step < 1e-3) continue;
+            added_length += step;
+            if (added_length > remaining_horizon) return false;
+            guide_stamp.push_back(guide_stamp.back()+step/maneuver_reference_.desired_speed);
+            guide_path.push_back(route[i]);
+        }
+        return guide_path.size() >= 2;
+
     }
 
     RET_CODE
@@ -820,7 +853,9 @@ namespace super_planner {
             time_consuming_[VISUALIZATION] += t_viz.stop();
         }
         shifted_sfc_start_pt_ = Vec3f(9999,9999,9999);
-        bool bool_ret_code = cg_ptr_->SearchPolytopeOnPath(guide_path, sfc, shifted_sfc_start_pt_, cfg_.use_fov_cut);
+        auto corridor_generator = maneuver_reference_active_ ? maneuver_cg_ptr_ : cg_ptr_;
+        bool bool_ret_code = corridor_generator->SearchPolytopeOnPath(
+            guide_path, sfc, shifted_sfc_start_pt_, cfg_.use_fov_cut);
 
         if (!bool_ret_code) {
             ros_ptr_->warn(" -- [SUPER] SearchPolytopeOnPath for new path failed");
@@ -840,8 +875,12 @@ namespace super_planner {
         {
             const double dist_to_goal = (gi_.goal_p - robot_state_.p).norm();
             if (maneuver_reference_active_) {
-                pos_fina_state.col(1) = maneuver_reference_.terminal_tangent *
-                    maneuver_reference_.desired_speed;
+                Vec3f tangent = guide_path.back()-guide_path[guide_path.size()-2];
+                if (tangent.norm() < 1e-6) tangent = maneuver_reference_.terminal_tangent;
+                if (!maneuver_reference_.terminal_stop ||
+                    (guide_path.back() - maneuver_reference_.points.back()).norm() > 1e-3) {
+                    pos_fina_state.col(1) = tangent.normalized()*maneuver_reference_.desired_speed;
+                }
             } else if (cfg_.continuous_following && dist_to_goal > cfg_.goal_stop_dis) {
                 // Orbit / moving-carrot: keep non-zero terminal velocity so the
                 // drone doesn't decelerate at every intermediate carrot.
@@ -893,6 +932,19 @@ namespace super_planner {
         if (!temp_ret) {
             ros_ptr_->warn(" -- [SUPER] OptimizationExpTrajInPolytopes for new path failed");
             return FAILED;
+        }
+        if (maneuver_reference_active_) {
+            const auto clear = orbitMapClearance(map_ptr_, maneuver_reference_.points,
+                maneuver_reference_.max_deviation, std::max({cfg_.robot_r, orbit_clearance_floor, cfg_.maneuver_clearance}),
+                cfg_.frontend_in_known_free);
+            const OrbitPoints reference(maneuver_reference_.points.begin(), maneuver_reference_.points.end());
+            const double dt = std::min(0.01, orbit_edge_step/std::max(0.1, cfg_.exp_traj_cfg.max_vel));
+            if (!validateOrbitCurve(reference, maneuver_reference_.max_deviation,
+                    out_traj.getTotalDuration(), dt,
+                    [&out_traj](double t) { return out_traj.getPos(t); }, clear)) {
+                ros_ptr_->warn(" -- [SUPER] Optimized maneuver violates clearance, tube, or station order");
+                return FAILED;
+            }
         }
         double replan_total_t = (ros_ptr_->getSimTime() - replan_process_start_WT);
         if (replan_total_t > cfg_.replan_forward_dt) {
@@ -966,6 +1018,7 @@ namespace super_planner {
     }
 
     RET_CODE SuperPlanner::generateBackupTrajectory(ExpTraj &ref_exp_traj, BackupTraj &back_traj_info) {
+        auto corridor_generator = maneuver_reference_active_ ? maneuver_cg_ptr_ : cg_ptr_;
         drone_state_mutex_.lock();
         back_traj_info.setRobotPos(robot_state_.p);
         drone_state_mutex_.unlock();
@@ -1021,7 +1074,7 @@ namespace super_planner {
                 Vec3f seed_pt = ref_exp_traj.getPos(dur);
                 Line line{back_traj_info.getRobotPos(), seed_pt};
                 Polytope temp_poly;
-                if (cg_ptr_->GeneratePolytopeFromLine(line, temp_poly)) {
+                if (corridor_generator->GeneratePolytopeFromLine(line, temp_poly)) {
                     back_traj_info.setSFC(temp_poly);
                     {
                         TimeConsuming t_viz("tviz", false);
@@ -1066,7 +1119,7 @@ namespace super_planner {
 
         Line line{shifted_robot_p, seed_point};
         Polytope temp_poly;
-        if (!cg_ptr_->GeneratePolytopeFromLine(line, temp_poly)) {
+        if (!corridor_generator->GeneratePolytopeFromLine(line, temp_poly)) {
             ros_ptr_->warn(" -- [SUPER] GeneratePolytopeFromLine failed, force return");
             return FAILED;
         }
@@ -1180,6 +1233,21 @@ namespace super_planner {
             back_traj_info.setEmpty();
             return OPT_FAILED;
         } else {
+            if (maneuver_reference_active_) {
+                const auto clear = orbitMapClearance(map_ptr_, maneuver_reference_.points,
+                    maneuver_reference_.max_deviation,
+                    std::max({cfg_.robot_r, orbit_clearance_floor, cfg_.maneuver_clearance}),
+                    cfg_.frontend_in_known_free);
+                const OrbitPoints reference(maneuver_reference_.points.begin(), maneuver_reference_.points.end());
+                const double dt = std::min(0.01, orbit_edge_step/std::max(0.1, cfg_.back_traj_cfg.max_vel));
+                if (!validateOrbitCurve(reference, maneuver_reference_.max_deviation,
+                        temp_pos_traj.getTotalDuration(), dt,
+                        [&temp_pos_traj](double t) { return temp_pos_traj.getPos(t); }, clear)) {
+                    ros_ptr_->warn(" -- [SUPER] Maneuver backup violates clearance, tube, or station order");
+                    back_traj_info.setEmpty();
+                    return OPT_FAILED;
+                }
+            }
             Vec4f yaw_init_vec = ref_exp_traj.getYawState(opt_ts).row(0);
             Vec4f yaw_goal{0, 0, 0, 0};
             bool free_end{true};

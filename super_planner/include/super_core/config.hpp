@@ -25,6 +25,8 @@
 #ifndef SUPER_PLANNER_CONFIG_HPP
 #define SUPER_PLANNER_CONFIG_HPP
 
+#include <cmath>
+#include <stdexcept>
 #include <rog_map/rog_map_core/config.hpp>
 #include <traj_opt/config.hpp>
 #include <utils/header/yaml_loader.hpp>
@@ -102,6 +104,7 @@ namespace super_planner {
         double replan_forward_dt;
         double sample_traj_dt;
         double robot_r;
+        double maneuver_clearance{0.85};
         int iris_iter_num;
 
         int mpc_horizon{};
@@ -141,6 +144,10 @@ namespace super_planner {
             loader.LoadParam("super_planner/planning_horizon", planning_horizon, 10.0);
             loader.LoadParam("super_planner/receding_dis", receding_dis, 5.0);
             loader.LoadParam("super_planner/robot_r", robot_r, 0.3);
+            loader.LoadParam("super_planner/maneuver_clearance", maneuver_clearance, 0.85);
+            if (!std::isfinite(maneuver_clearance) || maneuver_clearance <= 0.0) {
+                throw std::invalid_argument("maneuver_clearance must be finite and positive");
+            }
             loader.LoadParam("super_planner/iris_iter_num", iris_iter_num, 1);
             loader.LoadParam("super_planner/yaw_mode", yaw_mode, 1);
             loader.LoadParam("super_planner/mpc_horizon", mpc_horizon, 1);

@@ -14,6 +14,7 @@
     <depend>std_srvs</depend>
     <depend>rog_map</depend>
     <depend>traj_manager</depend>
+    <test_depend>ament_cmake_gtest</test_depend>
 
     <export>
         <build_type>ament_cmake</build_type>

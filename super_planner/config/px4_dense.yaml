@@ -68,8 +68,11 @@ super_planner:
   # and stop continuous replan so the drone settles instead of oscillating.
   # Orbit carrots stay ~lookahead away and are unaffected.
   goal_stop_dis: 1.20
-  goal_arrive_dis: 0.60
-  goal_arrive_vel: 0.30
+  # Keep static-goal completion inside traj_manager's 0.20 m / 0.25 m/s
+  # entry gate. Stopping replanning at 0.60 m can strand an accepted orbit
+  # in TRANSIT, especially after a brake or a terminal backup trajectory.
+  goal_arrive_dis: 0.15
+  goal_arrive_vel: 0.20
   # Autonomous stuck recovery (plan fail streaks, ~main/replan tick counts).
   # L1 re-snap goal free; L2 temporarily plan through unknown;
   # L2.5 hard-reset in-process ROG local map (clear phantoms);
@@ -116,6 +119,11 @@ super_planner:
   # Raising rog_map inflation_step to close the same gap from the front-end side
   # is separately DISPROVEN -- see the inflation_step comment below.
   robot_r: 0.42
+  # Orbit-only centre-to-surface clearance: raw brake min_clearance .65
+  # + half-diagonal of its .15 m voxel (~.13) + tracking slack. The planner
+  # separately adds ROG-map voxel uncertainty. Keep this >= the brake geometry
+  # if its settings are increased; values below .85 are clamped to .85.
+  maneuver_clearance: 0.85
   yaw_dot_max: 1.5
   yaw_mode: 1
   mpc_horizon: 15

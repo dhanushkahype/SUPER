@@ -186,6 +186,7 @@ namespace fsm {
 
         void ChangeState(const string &call_func, const MACHINE_STATE &new_state);
 
+        virtual void captureCommittedPlanProvenance() {}
         virtual void publishPolyTraj() = 0;
 
         // Diagnostic-only: report every planner result, including failures.

@@ -548,7 +548,7 @@ namespace path_search {
     }
 
     RET_CODE Astar::escapePathSearch(const rog_map::Vec3f &start_pt, const int flag, rog_map::vec_Vec3f &out_path) {
-        Vec3f tmp;
+        Vec3f tmp = start_pt;
         RET_CODE setup_ret = setup(start_pt, tmp, flag, 999);
         if (setup_ret != SUCCESS) {
             return setup_ret;
@@ -710,6 +710,28 @@ namespace path_search {
             fmt::print(fg(fmt::color::indian_red), "Time consume in A star path finding is {} s, iter={}.\n",
                        (time_2 - time_1),
                        num_iter);
+        }
+        static double last_escape_diagnostic = -1.0;
+        if (time_2 - last_escape_diagnostic >= 1.0) {
+            last_escape_diagnostic = time_2;
+            int free_neighbors = 0, occupied_neighbors = 0, other_neighbors = 0;
+            for (int dx = -1; dx <= 1; ++dx)
+                for (int dy = -1; dy <= 1; ++dy)
+                    for (int dz = -1; dz <= 1; ++dz) {
+                        if (dx == 0 && dy == 0 && dz == 0) continue;
+                        Vec3f p;
+                        globalIndexToPos(start_idx + Vec3i(dx, dy, dz), p);
+                        const auto type = map_ptr_->getGridType(p);
+                        if (type == KNOWN_FREE) ++free_neighbors;
+                        else if (type == OCCUPIED) ++occupied_neighbors;
+                        else ++other_neighbors;
+                    }
+            fmt::print(" -- [A*] escape diagnostic: start [{:.3f} {:.3f} {:.3f}], seed [{:.3f} {:.3f} {:.3f}], raw={} inflated={} neighbors free/occupied/other={}/{}/{} iterations={}\n",
+                       start_pt.x(), start_pt.y(), start_pt.z(),
+                       local_start_pt.x(), local_start_pt.y(), local_start_pt.z(),
+                       static_cast<int>(map_ptr_->getGridType(local_start_pt)),
+                       static_cast<int>(map_ptr_->getInfGridType(local_start_pt)),
+                       free_neighbors, occupied_neighbors, other_neighbors, num_iter);
         }
         cout << rog_map::RED << " -- [A*] Escape path searcher, cannot find path, return." << rog_map::RESET << endl;
         return NO_PATH;

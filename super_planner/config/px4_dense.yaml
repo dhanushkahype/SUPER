@@ -10,6 +10,7 @@
 fsm:
   click_goal_en: true
   click_goal_topic: "/planning/click_goal"
+  stop_goal_topic: "/planning/stop_goal"
   click_height: -6.0          # disabled (any value <= -5 passes goal Z through unchanged)
   click_yaw_en: true
   replan_rate: 10.0
@@ -64,9 +65,10 @@ super_planner:
   # next bottleneck, not this one.
   corridor_avoid_unknown: false
   continuous_following: true
-  # Near a static goal (global path end / final click): brake terminal velocity
-  # and stop continuous replan so the drone settles instead of oscillating.
-  # Orbit carrots stay ~lookahead away and are unaffected.
+  # Global path endpoints arrive explicitly on /planning/stop_goal and use
+  # zero terminal velocity whenever the local trajectory reaches that goal.
+  # goal_stop_dis remains the fallback for legacy unmarked pose goals.
+  # Intermediate carrots and ordered maneuver continuation are unchanged.
   goal_stop_dis: 1.20
   # Keep static-goal completion inside traj_manager's 0.20 m / 0.25 m/s
   # entry gate. Stopping replanning at 0.60 m can strand an accepted orbit

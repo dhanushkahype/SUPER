@@ -72,11 +72,17 @@ namespace rog_map {
         } rc_;
 
         void odomCallback(const nav_msgs::OdometryConstPtr& odom_msg) {
-            updateRobotState(std::make_pair(
-                Vec3f(odom_msg->pose.pose.position.x, odom_msg->pose.pose.position.y,
-                      odom_msg->pose.pose.position.z),
-                Quatf(odom_msg->pose.pose.orientation.w, odom_msg->pose.pose.orientation.x,
-                      odom_msg->pose.pose.orientation.y, odom_msg->pose.pose.orientation.z)));
+            const Pose pose{Vec3f(odom_msg->pose.pose.position.x,
+                                  odom_msg->pose.pose.position.y,
+                                  odom_msg->pose.pose.position.z),
+                            Quatf(odom_msg->pose.pose.orientation.w,
+                                  odom_msg->pose.pose.orientation.x,
+                                  odom_msg->pose.pose.orientation.y,
+                                  odom_msg->pose.pose.orientation.z)};
+            const Vec3f body_velocity(odom_msg->twist.twist.linear.x,
+                                      odom_msg->twist.twist.linear.y,
+                                      odom_msg->twist.twist.linear.z);
+            if (!updateRobotState(pose, body_velocity)) return;
 
 
             static tf2_ros::TransformBroadcaster br_map_ego;
@@ -95,11 +101,12 @@ namespace rog_map {
         }
 
         void cloudCallback(const sensor_msgs::PointCloud2ConstPtr& cloud_msg) {
-            if (!robot_state_.rcv) {
+            const RobotState state = getRobotState();
+            if (!state.rcv) {
                 return;
             }
             double cbk_t = ros::Time::now().toSec();
-            if (cbk_t - robot_state_.rcv_time > cfg_.odom_timeout) {
+            if (cbk_t - state.rcv_time > cfg_.odom_timeout) {
                 std::cout << YELLOW << " -- [ROS] Odom timeout, skip cloud callback." << RESET << std::endl;
                 return;
             }
@@ -107,7 +114,7 @@ namespace rog_map {
             pcl::fromROSMsg(*cloud_msg, tmp_pc);
             rc_.updete_lock.lock();
             rc_.pc = tmp_pc;
-            rc_.pc_pose = std::make_pair(robot_state_.p, robot_state_.q);
+            rc_.pc_pose = std::make_pair(state.p, state.q);
             rc_.unfinished_frame_cnt++;
             map_empty_ = false;
             rc_.updete_lock.unlock();
@@ -149,6 +156,7 @@ namespace rog_map {
 
 
         void vizCallback(const ros::TimerEvent& event) {
+            const RobotState state = getRobotState();
             TimeConsuming ssss("vizCallback", false);
 
             if (!cfg_.visualization_en) {
@@ -158,8 +166,8 @@ namespace rog_map {
                 return;
             }
 
-            Vec3f box_max = robot_state_.p + cfg_.visualization_range / 2;
-            Vec3f box_min = robot_state_.p - cfg_.visualization_range / 2;
+            Vec3f box_max = state.p + cfg_.visualization_range / 2;
+            Vec3f box_min = state.p - cfg_.visualization_range / 2;
 
             boundBoxByLocalMap(box_min, box_max);
             if ((box_max - box_min).minCoeff() <= 0) {
@@ -210,7 +218,7 @@ namespace rog_map {
             if (cfg_.esdf_en) {
                 if (vm_.esdf_pub.getNumSubscribers() >= 1) {
                     PointCloud tmp_cloud;
-                    esdf_map_->getPositiveESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, tmp_cloud);
+                    esdf_map_->getPositiveESDFPointCloud(box_min, box_max, state.p.z() - 0.5, tmp_cloud);
                     pcl::toROSMsg(tmp_cloud, cloud_msg);
                     cloud_msg.header.stamp = ros::Time::now();
                     vm_.esdf_pub.publish(cloud_msg);
@@ -218,7 +226,7 @@ namespace rog_map {
 
                 if (vm_.esdf_neg_pub.getNumSubscribers() >= 1) {
                     PointCloud tmp_cloud;
-                    esdf_map_->getNegativeESDFPointCloud(box_min, box_max, robot_state_.p.z() - 0.5, tmp_cloud);
+                    esdf_map_->getNegativeESDFPointCloud(box_min, box_max, state.p.z() - 0.5, tmp_cloud);
                     pcl::toROSMsg(tmp_cloud, cloud_msg);
                     cloud_msg.header.stamp = ros::Time::now();
                     vm_.esdf_neg_pub.publish(cloud_msg);

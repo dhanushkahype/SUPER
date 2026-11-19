@@ -27,6 +27,7 @@
 #include <rog_map/rog_map_core/common_lib.hpp>
 #include <super_utils/type_utils.hpp>
 #include <fmt/color.h>
+#include <mutex>
 
 namespace rog_map {
     using namespace std;
@@ -123,7 +124,9 @@ namespace rog_map {
 
         std::ofstream time_log_file_, map_info_log_file_;
 
-        void updateRobotState(const Pose& pose);
+        // Odometry twist is in the child/body frame; RobotState::v is in
+        // the map frame, like position and the polynomial boundary states.
+        bool updateRobotState(const Pose& pose, const Vec3f& body_velocity = Vec3f::Zero());
 
         bool findNearestCellThat(const bool & is, const GridType& target_type,
             const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
@@ -132,5 +135,6 @@ namespace rog_map {
           const Vec3f & start_pos, Vec3f& nearest_pt, const double & max_dis) const ;
 
         RobotState robot_state_;
+        mutable std::mutex robot_state_mutex_;
     };
 }

@@ -50,6 +50,7 @@ namespace fsm {
         double visualization_path_rate{2.0};
         double click_height{};
 
+        std::string stop_goal_topic;
         bool click_yaw_en{};
         bool continuous_following{false};
         // Arrival settle: even with continuous_following, stop replanning once
@@ -59,11 +60,13 @@ namespace fsm {
         double goal_arrive_vel{0.30};
         // Stuck recovery: consecutive PlanFromRest / ReplanOnce failures before
         // escalating (main FSM + replan timer both count).
+        // Legacy YAML fields are read for compatibility; automatic recovery no
+        // longer re-snaps goals, permits unknown space, or clears occupied maps.
         int stuck_fail_count{15};
-        int stuck_relax_count{30};   // temporarily allow unknown as free
-        int stuck_reset_map_count{40}; // hard-reset in-process ROG local map
+        int stuck_relax_count{30};   // legacy, ignored
+        int stuck_reset_map_count{40}; // legacy, ignored
         int stuck_give_up_count{60}; // abandon goal → WAIT_GOAL for upper layer
-        double stuck_reset_map_cooldown{20.0}; // [s] min time between ROG resets
+        double stuck_reset_map_cooldown{20.0}; // legacy, ignored
         double stuck_giveup_regoal_cooldown{5.0}; // [s] min time before re-accepting
         // a goal matching the one just abandoned at L3 (upstream re-publishing the
         // same unreachable goal must not immediately restart the fail cycle)
@@ -94,6 +97,7 @@ namespace fsm {
             loader.LoadParam("fsm/cmd_topic", cmd_topic, string("/planning/pos_cmd"));
             loader.LoadParam("fsm/mpc_cmd_topic", mpc_cmd_topic, string("/planning_cmd/mpc"));
             loader.LoadParam("fsm/click_goal_topic", click_goal_topic, string("/planning/click_goal_topic"));
+            loader.LoadParam("fsm/stop_goal_topic", stop_goal_topic, string("/planning/stop_goal"));
 
 
             loader.LoadParam("super_planner/yaw_dot_max", yaw_dot_max, 1.0, true);

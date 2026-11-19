@@ -96,7 +96,7 @@ void ROGMap::init() {
         cur_pose.first = Vec3f(0, 0, 0);
         updateOccPointCloud(*pcd_map);
         if(cfg_.esdf_en) {
-            esdf_map_->updateESDF3D(robot_state_.p);
+            esdf_map_->updateESDF3D(getRobotState().p);
         }
         cout << BLUE << " -- [ROGMap]Load pcd file success with " << pcd_map->size() << " pts." << RESET << endl;
         map_empty_ = false;
@@ -288,14 +288,26 @@ void ROGMap::updateMap(const PointCloud& cloud, const Pose& pose) {
 }
 
 RobotState ROGMap::getRobotState() const {
+    std::lock_guard<std::mutex> lock(robot_state_mutex_);
     return robot_state_;
 }
 
-void ROGMap::updateRobotState(const Pose& pose) {
-    robot_state_.p = pose.first;
-    robot_state_.q = pose.second;
-    robot_state_.rcv_time = getSystemWalltimeNow();
-    robot_state_.rcv = true;
-    robot_state_.yaw = get_yaw_from_quaternion<double>(pose.second);
+bool ROGMap::updateRobotState(const Pose& pose, const Vec3f& body_velocity) {
+    if (!pose.first.allFinite() || !pose.second.coeffs().allFinite() ||
+        pose.second.norm() < 1e-6 || !body_velocity.allFinite()) {
+        return false;
+    }
+    RobotState state;
+    state.p = pose.first;
+    state.q = pose.second.normalized();
+    state.v = state.q * body_velocity;
+    state.rcv_time = getSystemWalltimeNow();
+    state.rcv = true;
+    state.yaw = get_yaw_from_quaternion<double>(state.q);
+    {
+        std::lock_guard<std::mutex> lock(robot_state_mutex_);
+        robot_state_ = state;
+    }
     updateLocalBox(pose.first);
+    return true;
 }

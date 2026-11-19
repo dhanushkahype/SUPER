@@ -23,8 +23,8 @@ add_definitions(-DUSE_ROS2)
 string(TOUPPER $ENV{ROS_DISTRO} ROS_VERSION)
 message(STATUS "ROS version: ${ROS_VERSION}")
 
-# for CLION to search the package, user should change to his/her own relative location
-set(CMAKE_PREFIX_PATH ../../../install)
+# Preserve colcon's overlay search order, including the matching rog_map
+# headers and static library when robot-state handling is overridden.
 include_directories(
         SYSTEM
         include
@@ -141,6 +141,13 @@ install(DIRECTORY
 
 if(BUILD_TESTING)
     find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_planning_failure test/test_planning_failure.cpp)
+    target_link_libraries(test_planning_failure super ${third_party_libs})
+    ament_add_gtest(test_trajectory_slice test/test_trajectory_slice.cpp)
+    target_link_libraries(test_trajectory_slice super ${third_party_libs})
+    ament_add_gtest(test_brake_plan_recovery test/test_brake_plan_recovery.cpp)
+    ament_add_gtest(test_navigation_terminal_velocity test/test_navigation_terminal_velocity.cpp)
+    target_include_directories(test_navigation_terminal_velocity PRIVATE ${EIGEN3_INCLUDE_DIR})
     ament_add_gtest(test_goal_refresh test/test_goal_refresh.cpp)
     ament_add_gtest(test_maneuver_plan_watchdog test/test_maneuver_plan_watchdog.cpp)
     ament_add_gtest(test_ordered_orbit_detour test/test_ordered_orbit_detour.cpp)

@@ -237,9 +237,12 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
           c'
      * */
     double total_dur = getTotalDuration();
-    if (start_TT < 0 || start_TT >= total_dur) {
+    constexpr double min_piece_duration = 1e-6;
+    if (!std::isfinite(start_TT) || !std::isfinite(end_TT) ||
+        start_TT < 0 || start_TT >= total_dur) {
         std::cout << YELLOW << "Partial traj end_t error. [Start_TT]: " << start_TT
                   << " [Total Dur]: " << total_dur << RESET << std::endl;
+        return false;
     }
     if (end_TT <= 0 || end_TT > total_dur) {
         std::cout << YELLOW << "Partial traj end_t error. [end_TT]: " << end_TT
@@ -247,18 +250,29 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
                   RESET << std::endl;
         return false;
     }
-    if (end_TT <= start_TT) {
+    if (end_TT - start_TT <= min_piece_duration) {
         std::cout << YELLOW << "Time duration wrong: start_t: " << start_TT <<
                   "; end_t: " << end_TT << RESET << std::endl;
         return false;
     }
 
     out_traj.clear();
+    // The controller rejects pieces <=1us. Replan windows often start at a
+    // previous window's 0.1s boundary, with floating-point roundoff leaving
+    // a zero/nanosecond fragment. Extend the adjacent continuous polynomial
+    // across that remnant, preserving the requested duration and wall time.
+    const auto locate_end = [this](double& t, int start_idx) {
+        int idx = locatePieceIdx(t);
+        if (idx > start_idx && t <= min_piece_duration) {
+            t += pieces[--idx].getDuration();
+        }
+        return idx;
+    };
     if (start_TT == 0) {
         // 只需要修改终点时间即可
 //            print("Only change end time.\n");
         double t0 = end_TT;
-        int pieceIdx = locatePieceIdx(t0);
+        int pieceIdx = locate_end(t0, 0);
 //            print("pieceIdx = {}, t0 = {}.\n",pieceIdx,t0);
         if (pieceIdx == 0) {
             Piece new_pie = pieces[pieceIdx];
@@ -280,8 +294,12 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
     double t0 = start_TT;
     double local_end_t = end_TT;
     int pieceIdx = locatePieceIdx(t0);
+    if (pieceIdx + 1 < getPieceNum() &&
+        pieces[pieceIdx].getDuration() - t0 <= min_piece_duration) {
+        t0 -= pieces[pieceIdx++].getDuration();
+    }
     if (pieces[pieceIdx].getDegree() == 5) {
-        int pieceEndIdx = locatePieceIdx(local_end_t);
+        int pieceEndIdx = locate_end(local_end_t, pieceIdx);
         double t02 = t0 * t0;
         double t03 = t02 * t0;
         double t04 = t03 * t0;
@@ -297,7 +315,8 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
                 t05, 1 * t04, 1 * t03, t02, t0, 1;
 
         coef_mat = coef_mat * cvt_M.transpose();
-        double p1_t = std::min(pieces[pieceIdx].getDuration() - t0, end_TT - start_TT);
+        double p1_t = pieceIdx == pieceEndIdx ? end_TT - start_TT
+                                             : pieces[pieceIdx].getDuration() - t0;
         Piece new_pie(p1_t, coef_mat);
         out_traj.pieces.push_back(new_pie);
         if (pieceIdx == pieceEndIdx) {
@@ -314,7 +333,7 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
         out_traj.start_WT = start_WT + start_TT;
         return true;
     } else if (pieces[pieceIdx].getDegree() == 7) {
-        int pieceEndIdx = locatePieceIdx(local_end_t);
+        int pieceEndIdx = locate_end(local_end_t, pieceIdx);
         double t02 = t0 * t0;
         double t03 = t02 * t0;
         double t04 = t03 * t0;
@@ -335,7 +354,8 @@ bool Trajectory::getPartialTrajectoryByTime(const double &start_TT, const double
                 t07, t06, 1 * t05, t04, t03, t02, t0, 1;
 
         coef_mat = coef_mat * cvt_M.transpose();
-        double p1_t = std::min(pieces[pieceIdx].getDuration() - t0, end_TT - start_TT);
+        double p1_t = pieceIdx == pieceEndIdx ? end_TT - start_TT
+                                             : pieces[pieceIdx].getDuration() - t0;
         Piece new_pie(p1_t, coef_mat);
         out_traj.pieces.push_back(new_pie);
         if (pieceIdx == pieceEndIdx) {

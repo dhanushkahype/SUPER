@@ -1,3 +1,4 @@
+#include "utils/geometry/navigation_terminal_velocity.hpp"
 #include <cmath>
 using std::isnan;
 /**
@@ -539,10 +540,13 @@ namespace super_planner {
 
         /* 2) Check last exp traj */
         if (last_exp_traj_info.empty()) {
-            /* 2.1) Perform rest2rest exp traj generation */
-            // just skip the first part of the guide trajectory
+            // An exhausted trajectory or a new goal can arrive while moving.
+            // Keep measured map-frame velocity rather than commanding an
+            // artificial stop before acquiring the next local trajectory.
             pos_init_state.setZero();
             pos_init_state.col(0) = local_start_p_;
+            pos_init_state.col(1) = robot_state_.v;
+            guide_path_end_vel = robot_state_.v.norm();
             replan_process_start_TT = -1;
             replan_state_TT = -1;
         } else {
@@ -571,9 +575,9 @@ namespace super_planner {
 
                 if (cfg_.print_log) {
                     ros_ptr_->warn(
-                            " -- [generateExpTraj] replan_state_TT >= cmd_traj_info_.pos_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
+                            " -- [generateExpTraj] replan_state_TT >= cmd_traj_info_.pos_traj.getTotalDuration(), request a fresh trajectory before the committed horizon expires.");
                 }
-                return NO_NEED;
+                return cfg_.continuous_following ? NEW_TRAJ : NO_NEED;
             }
 
             if (!last_exp_traj_info.empty()) {
@@ -581,14 +585,14 @@ namespace super_planner {
                     out_exp_traj_info = last_exp_traj_info;
                     if (cfg_.print_log)
                         ros_ptr_->warn(
-                                " -- [generateExpTraj] replan_state_TT >= last_exp_traj.getTotalDuration(), return NONEED and wait for plan form rest.");
+                                " -- [generateExpTraj] replan_state_TT >= last_exp_traj.getTotalDuration(), request a fresh trajectory before the committed horizon expires.");
                     if (robot_on_backup_traj_) {
                         if (cfg_.print_log)
                             ros_ptr_->warn(
                                     " -- [SUPER] Replan, emergency stop, return FAILED and wait for plan form rest.");
                         return FAILED;
                     } else {
-                        return NO_NEED;
+                        return cfg_.continuous_following ? NEW_TRAJ : NO_NEED;
                     }
                 }
 
@@ -881,27 +885,16 @@ namespace super_planner {
                     (guide_path.back() - maneuver_reference_.points.back()).norm() > 1e-3) {
                     pos_fina_state.col(1) = tangent.normalized()*maneuver_reference_.desired_speed;
                 }
-            } else if (cfg_.continuous_following && dist_to_goal > cfg_.goal_stop_dis) {
-                // Orbit / moving-carrot: keep non-zero terminal velocity so the
-                // drone doesn't decelerate at every intermediate carrot.
-                const Vec3f dir = gi_.goal_p - robot_state_.p;
-                if (dir.norm() > 1e-3) {
-                    pos_fina_state.col(1) = dir.normalized() * cfg_.exp_traj_cfg.max_vel / 2;
-                }
-            } else if (!cfg_.continuous_following) {
-                if (cfg_.goal_vel_en && dist_to_goal > cfg_.planning_horizon / 2) {
-                    pos_fina_state.col(1) =
-                        (gi_.goal_p - robot_state_.p).normalized() * cfg_.exp_traj_cfg.max_vel / 2;
-                }
-                if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
-                    pos_fina_state.col(1).setZero();
-                    pos_fina_state.col(0) = gi_.goal_p;
-                }
             } else {
-                // continuous_following but near a static endpoint: brake to zero
-                // terminal velocity so OMMPC can settle instead of oscillating.
-                pos_fina_state.col(1).setZero();
-                if ((pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2) {
+                pos_fina_state.col(1) = super_utils::navigationTerminalVelocity(
+                    robot_state_.p, pos_fina_state.col(0), gi_.goal_p,
+                    gi_.terminal_stop, cfg_.continuous_following, cfg_.goal_vel_en,
+                    cfg_.goal_stop_dis, cfg_.planning_horizon, cfg_.resolution * 2,
+                    cfg_.exp_traj_cfg.max_vel);
+                const bool local_reaches_goal =
+                    (pos_fina_state.col(0) - gi_.goal_p).norm() < cfg_.resolution * 2;
+                if (local_reaches_goal && (gi_.terminal_stop || !cfg_.continuous_following ||
+                    dist_to_goal <= cfg_.goal_stop_dis)) {
                     pos_fina_state.col(0) = gi_.goal_p;
                 }
             }

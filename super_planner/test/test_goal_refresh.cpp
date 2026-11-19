@@ -14,3 +14,9 @@ TEST(GoalRefresh, NewPositionOrYawStillCommandsMotion) {
     EXPECT_TRUE(super_utils::isGoalRefresh(0, 0, 2 * std::acos(-1.0), true, false));
     EXPECT_FALSE(super_utils::isGoalRefresh(0, 0, std::numeric_limits<double>::quiet_NaN(), true, false));
 }
+
+TEST(GoalRefresh, FinalStopUpgradeReplansEvenAtIdenticalTarget) {
+    EXPECT_FALSE(super_utils::isGoalRefresh(0, 0, 0, true, false, false, true));
+    EXPECT_FALSE(super_utils::isGoalRefresh(0, 0, 0, true, false, true, false));
+    EXPECT_TRUE(super_utils::isGoalRefresh(0, 0, 0, true, false, true, true));
+}

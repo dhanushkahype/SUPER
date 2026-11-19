@@ -105,6 +105,10 @@ if(BUILD_TESTING)
     target_link_libraries(test_static_prior rog_map)
     add_test(NAME static_prior_regressions COMMAND test_static_prior
         ${CMAKE_CURRENT_SOURCE_DIR}/../super_planner/config/px4_dense.yaml)
+    add_executable(test_robot_state test/test_robot_state.cpp)
+    target_link_libraries(test_robot_state rog_map)
+    add_test(NAME robot_state_regressions COMMAND test_robot_state
+        ${CMAKE_CURRENT_SOURCE_DIR}/../super_planner/config/px4_dense.yaml)
 endif()
 
 ament_package()

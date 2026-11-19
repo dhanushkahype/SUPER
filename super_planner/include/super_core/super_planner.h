@@ -90,6 +90,7 @@ namespace super_planner {
             double goal_yaw{0};
             bool new_goal{true};
             bool goal_valid{true};
+            bool terminal_stop{false};
         } gi_;
 
         struct ManeuverReference {
@@ -110,6 +111,7 @@ namespace super_planner {
         vector<double> time_consuming_;
 
     public:
+        void setNavigationTerminalStop(bool stop) { gi_.terminal_stop = stop; }
         EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 
         explicit SuperPlanner(const std::string &cfg_path,

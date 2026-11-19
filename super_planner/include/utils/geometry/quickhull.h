@@ -1,8 +1,10 @@
+#include <cstdint>
 // Public domain code from Antti Kuukka
 // https://github.com/akuukka/quickhull
 // Many thanks to him.
 
 #pragma once
+
 
 #include <iostream>
 #include <cmath>

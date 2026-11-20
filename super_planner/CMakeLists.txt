@@ -141,6 +141,9 @@ install(DIRECTORY
 
 if(BUILD_TESTING)
     find_package(ament_cmake_gtest REQUIRED)
+    ament_add_gtest(test_planning_failure test/test_planning_failure.cpp)
+    target_link_libraries(test_planning_failure super ${third_party_libs})
+    ament_add_gtest(test_brake_plan_recovery test/test_brake_plan_recovery.cpp)
     ament_add_gtest(test_goal_refresh test/test_goal_refresh.cpp)
     ament_add_gtest(test_maneuver_plan_watchdog test/test_maneuver_plan_watchdog.cpp)
     ament_add_gtest(test_ordered_orbit_detour test/test_ordered_orbit_detour.cpp)

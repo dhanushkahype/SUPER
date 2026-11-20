@@ -40,6 +40,8 @@
 #include "operator_msgs/msg/trajectory_plan_status.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "utils/geometry/brake_plan_recovery.hpp"
 #include "traj_manager/msg/maneuver_reference.hpp"
 #include "utils/geometry/maneuver_plan_watchdog.hpp"
 #include "utils/geometry/committed_plan_provenance.hpp"
@@ -49,6 +51,28 @@
 
 namespace fsm {
     class FsmRos2 : public Fsm {
+
+        super_planner::BrakePlanRecovery brake_recovery_;
+        uint64_t planning_brake_generation_{0};
+        rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr brake_sub_;
+        bool pauseForBrake() {
+            planner_ptr_->getRobotState(robot_state_);
+            const double now = nh_->now().seconds();
+            const bool settled = robot_state_.rcv && robot_state_.v.norm() <= 0.12 &&
+                ros_ptr_->getSimTime()-robot_state_.rcv_time <= 0.1;
+            const auto action = brake_recovery_.update(now, settled);
+            if (action == super_planner::BrakePlanRecovery::Action::BLOCK) return true;
+            if (action == super_planner::BrakePlanRecovery::Action::RESTART_FROM_MEASURED &&
+                started_ && (machine_state_ == FOLLOW_TRAJ || machine_state_ == GENERATE_TRAJ || gi_.new_goal)) {
+                plan_from_rest_ = false;
+                finish_plan = false;
+                gi_.new_goal = true;
+                ChangeState("BrakeRecovery", GENERATE_TRAJ);
+                RCLCPP_WARN(nh_->get_logger(),
+                    "[brake_recovery] source clear and aircraft settled; replanning from measured position");
+            }
+            return false;
+        }
 
         bool autonomy_managed_{false};
         double last_maneuver_reference_s_{-1.0};
@@ -123,6 +147,7 @@ namespace fsm {
         }
 
         void beginPlanningAttempt() {
+            planning_brake_generation_ = brake_recovery_.generation();
             planning_created_ns_ = nh_->now().nanoseconds();
             planning_source_token_ = reference_owner_token_;
         }
@@ -135,6 +160,8 @@ namespace fsm {
         }
 
         void publishPolyTraj() override {
+            if (brake_recovery_.blocked(nh_->now().seconds()) ||
+                brake_recovery_.generation() != planning_brake_generation_) return;
             mars_quadrotor_msgs::msg::PolynomialTrajectory cmd_traj;
             getCommittedTrajectory(cmd_traj);
             mpc_cmd_pub_->publish(cmd_traj);
@@ -534,6 +561,11 @@ namespace fsm {
             // 初始化Planner
             ros_ptr_ = std::make_shared<ros_interface::Ros2Interface>(nh_);
             planner_ptr_ = std::make_shared<SuperPlanner>(cfg_path, ros_ptr_, map_ptr_);
+            brake_sub_ = nh_->create_subscription<std_msgs::msg::Bool>(
+                "/safety/brake", rclcpp::SensorDataQoS(),
+                [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+                    brake_recovery_.observe(msg->data, nh_->now().seconds());
+                });
             cmd_pub_ = nh_->create_publisher<mars_quadrotor_msgs::msg::PositionCommand>(cfg_.cmd_topic, qos);
             mpc_cmd_pub_ = nh_->create_publisher<mars_quadrotor_msgs::msg::PolynomialTrajectory>(cfg_.mpc_cmd_topic,
                                                                                                  qos);
@@ -636,6 +668,7 @@ namespace fsm {
 
         void pubCmdTimerCallback() {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
+            if (pauseForBrake()) return;
             if (stop) {
                 return;
             }
@@ -664,6 +697,7 @@ namespace fsm {
         void replanTimerCallback() {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             expireManeuverReference();
+            if (pauseForBrake()) return;
             beginPlanningAttempt();
             callReplanOnce();
         }
@@ -671,6 +705,7 @@ namespace fsm {
         void mainFsmTimerCallback() {
             std::lock_guard<std::recursive_mutex> guard(autonomy_mutex_);
             expireManeuverReference();
+            if (pauseForBrake()) return;
             beginPlanningAttempt();
             callMainFsmOnce();
         }

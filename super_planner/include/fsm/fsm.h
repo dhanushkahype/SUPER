@@ -160,9 +160,6 @@ namespace fsm {
 
         // Stuck recovery: consecutive planning failures while a goal is active.
         int plan_fail_streak_{0};
-        bool frontend_relaxed_{false};
-        bool frontend_known_free_default_{true};
-        double last_rog_reset_wall_s_{-1.0};
         bool has_giveup_goal_{false};
         Vec3f last_giveup_goal_{Vec3f::Zero()};
         double last_giveup_wall_s_{-1.0};
@@ -178,9 +175,10 @@ namespace fsm {
         /// Distance + speed settle test (see fsm/config goal_arrive_*).
         bool arrivedAtGoal();
 
-        /// Escalating recovery after plan failures (phantom ROG / blocked goal).
+        /// Bounded retries without weakening map evidence or clearance policy.
         void onPlanFailure(const std::string & context);
         void onPlanSuccess();
+        void recordPlanFailure(const std::string &context, bool maneuver_active, double now_s);
 
         void setGoalPosiAndYaw(const Vec3f &p, const Quatf &q);
 

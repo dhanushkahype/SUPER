@@ -237,78 +237,25 @@ namespace fsm {
 
     void Fsm::onPlanSuccess() {
         plan_fail_streak_ = 0;
-        if (frontend_relaxed_) {
-            planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
-            frontend_relaxed_ = false;
-            cout << GREEN
-                 << " -- [Fsm] Plan ok — restored frontend_in_known_free="
-                 << (frontend_known_free_default_ ? "true" : "false")
-                 << RESET << endl;
-        }
     }
 
     void Fsm::onPlanFailure(const std::string & context) {
+        recordPlanFailure(context, planner_ptr_->maneuverReferenceActive(), ros_ptr_->getSimTime());
+    }
+
+    void Fsm::recordPlanFailure(const std::string &context, bool maneuver_active, double now_s) {
         plan_fail_streak_++;
         cout << YELLOW << " -- [Fsm] " << context << " fail streak="
              << plan_fail_streak_ << RESET << endl;
 
         // A blocked maneuver has a fixed geometric bound. Do not move its
         // endpoint, permit unknown space, or reset the obstacle map to force it.
-        if (planner_ptr_->maneuverReferenceActive()) return;
+        if (maneuver_active) return;
 
-        // Level 1: re-snap goal into free space with a larger search radius
-        // (phantom occupancy / mover trails often sit on the requested goal).
-        if (plan_fail_streak_ == cfg_.stuck_fail_count) {
-            Vec3f snapped = gi_.goal_p;
-            if (planner_ptr_->getMap()->getNearestInfCellNot(
-                    GridType::OCCUPIED, gi_.goal_p, snapped, 5.0)) {
-                gi_.goal_p = snapped;
-                gi_.new_goal = true;
-                cout << YELLOW
-                     << " -- [Fsm] Stuck recovery L1: re-snapped goal to free "
-                     << gi_.goal_p.transpose() << RESET << endl;
-            }
-        }
-
-        // Level 2: temporarily allow A* through unknown (ghost trails that
-        // still read occupied/unknown while FreeDOM has already cleared them
-        // from OctoMap). Restored on next successful plan.
-        if (plan_fail_streak_ == cfg_.stuck_relax_count) {
-            if (!frontend_relaxed_) {
-                frontend_known_free_default_ = planner_ptr_->frontendInKnownFree();
-                planner_ptr_->setFrontendInKnownFree(false);
-                frontend_relaxed_ = true;
-                gi_.new_goal = true;
-                cout << YELLOW
-                     << " -- [Fsm] Stuck recovery L2: frontend_in_known_free=false "
-                        "(unknown traversable until plan succeeds)"
-                     << RESET << endl;
-            }
-        }
-
-        // Level 2.5: hard-reset the in-process ROG local map (phantom dynamics /
-        // stale inflation). ROG is not a separate server — it lives in fsm_node;
-        // clearing + recentering is the equivalent of a "rog map restart".
-        if (plan_fail_streak_ == cfg_.stuck_reset_map_count) {
-            const double now_s = ros_ptr_->getSimTime();
-            const bool cooled = (last_rog_reset_wall_s_ < 0.0) ||
-                ((now_s - last_rog_reset_wall_s_) >= cfg_.stuck_reset_map_cooldown);
-            if (cooled) {
-                planner_ptr_->getRobotState(robot_state_);
-                planner_ptr_->getMap()->hardResetLocalMap(robot_state_.p);
-                last_rog_reset_wall_s_ = now_s;
-                gi_.new_goal = true;
-                cout << YELLOW
-                     << " -- [Fsm] Stuck recovery L2.5: ROG local map HARD RESET "
-                        "at robot — waiting for LiDAR to refill free space"
-                     << RESET << endl;
-            } else {
-                cout << YELLOW
-                     << " -- [Fsm] Stuck recovery L2.5: ROG reset skipped "
-                        "(cooldown " << cfg_.stuck_reset_map_cooldown << "s)"
-                     << RESET << endl;
-            }
-        }
+        // Planning failure is not evidence that mapped obstacles are ghosts.
+        // Preserve the goal, unknown-space policy and occupied map on every
+        // retry. The former L2/L2.5 recovery accepted a trajectory through an
+        // empty map after erasing the real divider wall (2026-11-11 crash).
 
         // Level 3: give up this goal so global_planner / exploration can
         // pick a new one (or the user can re-click). Stay ready for a new goal.
@@ -318,14 +265,10 @@ namespace fsm {
             plan_fail_streak_ = 0;
             has_giveup_goal_ = true;
             last_giveup_goal_ = gi_.goal_p;
-            last_giveup_wall_s_ = ros_ptr_->getSimTime();
-            if (frontend_relaxed_) {
-                planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
-                frontend_relaxed_ = false;
-            }
+            last_giveup_wall_s_ = now_s;
             ChangeState(context, WAIT_GOAL);
             cout << YELLOW
-                 << " -- [Fsm] Stuck recovery L3: giving up goal, WAIT_GOAL "
+                 << " -- [Fsm] Planning blocked: preserving obstacle map, giving up goal, WAIT_GOAL "
                     "(replan/global path needed)"
                  << RESET << endl;
         }
@@ -403,10 +346,6 @@ namespace fsm {
         // be set from the previous arrival settle).
         finish_plan = false;
         plan_fail_streak_ = 0;
-        if (frontend_relaxed_) {
-            planner_ptr_->setFrontendInKnownFree(frontend_known_free_default_);
-            frontend_relaxed_ = false;
-        }
     }
 
     void Fsm::ChangeState(const string &call_func, const MACHINE_STATE &new_state) {

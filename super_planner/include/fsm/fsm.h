@@ -193,6 +193,12 @@ namespace fsm {
 
         virtual void publishCurPoseToPath() = 0;
 
+        // Called once each time this FSM abandons its goal after
+        // stuck_give_up_count consecutive planning failures. The ROS 2 node
+        // reports it so the layer that re-sends goals can stop re-sending a
+        // goal SUPER cannot plan, instead of looping until a mission timeout.
+        virtual void publishGoalGivenUp(const Vec3f & /*goal*/) {}
+
         virtual void resetVisualizedPath() = 0;
     };
 }

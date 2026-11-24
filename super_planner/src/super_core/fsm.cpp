@@ -271,6 +271,7 @@ namespace fsm {
                  << " -- [Fsm] Planning blocked: preserving obstacle map, giving up goal, WAIT_GOAL "
                     "(replan/global path needed)"
                  << RESET << endl;
+            publishGoalGivenUp(last_giveup_goal_);
         }
     }
 

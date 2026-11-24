@@ -167,6 +167,20 @@ namespace fsm {
             mpc_cmd_pub_->publish(cmd_traj);
         }
 
+        // outcome "gave_up": SUPER abandoned its goal after stuck_give_up_count
+        // consecutive failures (fsm.cpp recordPlanFailure). global_planner
+        // counts these to report a goal that the local planner cannot reach.
+        void publishGoalGivenUp(const Vec3f & /*goal*/) override {
+            operator_msgs::msg::TrajectoryPlanStatus status;
+            ros_ptr_->getSimTime(status.header.stamp.sec, status.header.stamp.nanosec);
+            status.header.frame_id = "world";
+            status.replan_id = ++replan_id_;
+            status.return_code = static_cast<int32_t>(super_utils::FAILED);
+            status.outcome = "gave_up";
+            status.committed = false;
+            trajectory_status_pub_->publish(status);
+        }
+
         void publishTrajectoryPlanStatus(RET_CODE result, double planning_s,
                                          bool committed) override {
             operator_msgs::msg::TrajectoryPlanStatus status;

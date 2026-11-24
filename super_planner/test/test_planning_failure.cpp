@@ -25,6 +25,9 @@ public:
     void publishTrajectoryPlanStatus(RET_CODE, double, bool) override {}
     void publishCurPoseToPath() override {}
     void resetVisualizedPath() override {}
+    void publishGoalGivenUp(const Vec3f &goal) override { ++give_ups; last_given_up = goal; }
+    int give_ups{0};
+    Vec3f last_given_up{Vec3f::Zero()};
 };
 
 TEST(PlanningFailure, RetryThresholdsNeverMutateGoalOrRequireMapMutation) {
@@ -43,6 +46,23 @@ TEST(PlanningFailure, RetryThresholdsNeverMutateGoalOrRequireMapMutation) {
     EXPECT_TRUE(f.finished());
     EXPECT_TRUE(f.remembered());
     EXPECT_EQ((f.goal() - goal).norm(), 0.0);
+    // Reported exactly once, with the abandoned goal, so the upper layer can
+    // stop re-sending it.
+    EXPECT_EQ(f.give_ups, 1);
+    EXPECT_EQ((f.last_given_up - goal).norm(), 0.0);
+}
+
+TEST(PlanningFailure, GiveUpIsReportedOncePerAbandonmentAndNeverForManeuvers) {
+    FailureFsm f;
+    f.fail(59);
+    EXPECT_EQ(f.give_ups, 0);
+    f.fail(1);
+    EXPECT_EQ(f.give_ups, 1);
+    f.fail(60);  // a second full streak after re-dispatch
+    EXPECT_EQ(f.give_ups, 2);
+    FailureFsm m;
+    m.fail(130, true);
+    EXPECT_EQ(m.give_ups, 0);
 }
 
 TEST(PlanningFailure, SuccessfulPlanResetsConsecutiveFailureBudget) {
